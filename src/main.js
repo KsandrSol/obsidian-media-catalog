@@ -135,9 +135,10 @@ class Api {
     const items=[], warnings=[]; const isbn=canonicalISBN(query);
     const searches=[];if(provider!=="google")searches.push((async()=>{
       try {
-        const data=await this.ol("search.json",{q:isbn?"isbn:"+isbn:query,limit:"8",fields:"key,title,author_name,first_publish_year,editions,editions.key,editions.title,editions.publish_date,editions.publisher,editions.language,editions.isbn", "editions.limit":"3"});
+        const params={q:isbn?"isbn:"+isbn:query,lang:this.metadataLocale().split("-")[0],limit:"12",fields:"key,title,author_name,first_publish_year,cover_edition_key,edition_key,editions,editions.key,editions.title,editions.publish_date,editions.publisher,editions.language,editions.isbn", "editions.limit":"3"};
+        let data;if(isbn)data=await this.ol("search.json",params);else{data=await this.ol("search.json",{...params,q:"title:\""+query.replace(/[\"\\]/g," ")+"\""});if(!arr(data.docs).length)data=await this.ol("search.json",params);}
         for(const work of arr(data.docs)) {
-          const editions=arr(work.editions?.docs);
+          const editions=arr(work.editions?.docs);if(!editions.length){const fallback=text(work.cover_edition_key)||arr(work.edition_key).find(id=>/^OL\d+M$/.test(id));if(fallback)editions.push({key:fallback,title:work.title});}
           for(const e of editions) {
             const id=text(e.key).split("/").pop(); if(!/^OL\d+M$/.test(id)) continue;
             items.push({kind,source:"openlibrary",id,title:cleanTitle(e.title||work.title),author:arr(work.author_name).filter(x=>typeof x==="string").join(", "),year:year(arr(e.publish_date)[0]||e.publish_date),publisher:arr(e.publisher).join(", "),language:arr(e.language).join(", "),isbn:arr(e.isbn),first_published:number(work.first_publish_year)});
@@ -153,16 +154,25 @@ class Api {
       } catch(e) { warnings.push("Google Books: "+e.message); }
     })());
     await Promise.all(searches);
-    const seen=new Set(); return {items:items.filter(i=>i.title&&!seen.has(i.source+":"+i.id)&&seen.add(i.source+":"+i.id)).slice(0,24),warnings};
+    const seen=new Set(); return {items:items.filter(i=>i.title&&!seen.has(i.source+":"+i.id)&&seen.add(i.source+":"+i.id)).sort((a,b)=>Number(titleKey(b.title)===titleKey(query))-Number(titleKey(a.title)===titleKey(query))).slice(0,24),warnings};
+  }
+  async wikiCover(entity) {
+    const languages=[...new Set([this.metadataLocale().split("-")[0],"en"])];
+    for(const lang of languages){if(!/^[a-z]{2,3}$/.test(lang))continue;const title=text(entity.sitelinks?.[lang+"wiki"]?.title);if(!title)continue;
+      try{const data=await this.json("https://"+lang+".wikipedia.org/w/api.php?"+new URLSearchParams({action:"query",format:"json",prop:"pageimages|pageprops",titles:title,piprop:"thumbnail",pithumbsize:"500",pilicense:"any",redirects:"1"}));
+        for(const page of Object.values(data.query?.pages||{})){const cover=validURL(page.thumbnail?.source);if(page.pageprops?.wikibase_item===entity.id&&cover&&new URL(cover).hostname==="upload.wikimedia.org")return {cover,cover_source:"https://"+lang+".wikipedia.org/wiki/"+encodeURIComponent(page.title.replace(/ /g,"_"))};}
+      }catch{} // Image failure must not discard usable film metadata.
+    }
+    return {};
   }
   async details(item) {
     const ratings=[], at=isoDate();
     if(item.source==="wikidata") {
       if(!/^Q\d+$/.test(item.id))throw new Error("Некорректный идентификатор фильма.");
-      const entity=(await this.entities([item.id]))[item.id];if(!entity||!this.isFilm(entity))throw new Error("Источник вернул другой фильм.");
+      const entity=(await this.entities([item.id],"labels|descriptions|claims|sitelinks"))[item.id];if(!entity||!this.isFilm(entity))throw new Error("Источник вернул другой фильм.");
       const ids=[...this.claims(entity,"P57"),...this.claims(entity,"P136"),...this.claims(entity,"P495")].map(v=>v.id).filter(id=>/^Q\d+$/.test(id||""));const related=await this.entities([...new Set(ids)].slice(0,40),"labels");
       const labels=property=>this.claims(entity,property).map(v=>this.wikiLabel(related[v.id])).filter(Boolean),src="https://www.wikidata.org/wiki/"+item.id;
-      return {kind:"film",source:"wikidata",source_id:item.id,description:this.wikiLabel(entity,"descriptions"),fields:{title:this.wikiLabel(entity),year:year(this.claims(entity,"P577")[0]?.time),director:labels("P57"),genre:labels("P136"),country:labels("P495"),wikidata_id:item.id,imdb_id:text(this.claims(entity,"P345")[0])||null,tmdb_id:text(this.claims(entity,"P4947")[0])||null,source_url:src,external_ratings:[]}};
+      return {kind:"film",source:"wikidata",source_id:item.id,description:this.wikiLabel(entity,"descriptions"),fields:{title:this.wikiLabel(entity),year:year(this.claims(entity,"P577")[0]?.time),director:labels("P57"),genre:labels("P136"),country:labels("P495"),wikidata_id:item.id,imdb_id:text(this.claims(entity,"P345")[0])||null,tmdb_id:text(this.claims(entity,"P4947")[0])||null,source_url:src,...await this.wikiCover(entity),external_ratings:[]}};
     }
     if(item.source==="tmdb") {
       if(!/^\d+$/.test(item.id)) throw new Error("Некорректный идентификатор фильма.");
@@ -274,7 +284,7 @@ async function scanNotes(plugin,folder,kind,recursive=true) {
   const rows=[],warnings=[];
   for(const file of catalogFiles(plugin.app,folder).sort((a,b)=>a.path.localeCompare(b.path))){if(file.path.startsWith("Media catalog backups/")||!recursive&&file.path.slice(folder.length+1).includes("/"))continue;
     try{const raw=await plugin.app.vault.read(file),{values}=strictFrontmatter(raw);if(!emptyValue(values.type)&&values.type!==kind)continue;
-      const title=cleanTitle(values.title||file.basename),release=kind==="film"?year(values.year)||year(file.basename):null,ids=[...isbnSet(values.isbn)],author=arr(values.author).join(" ")||text(values.author);
+      const storedTitle=cleanTitle(values.title),title=/^(название книги|название фильма|book title|movie title)$/i.test(storedTitle)?cleanTitle(file.basename):storedTitle||cleanTitle(file.basename),release=kind==="film"?year(values.year)||year(file.basename):null,ids=[...isbnSet(values.isbn)],author=arr(values.author).join(" ")||text(values.author);
       const query=kind==="book"&&ids.length?ids[0]:kind==="book"?[title,author].filter(Boolean).join(" "):title.replace(/\s*\((?:19|20)\d{2}\)\s*$/,"");
       rows.push({file,raw,query,year:release?String(release):""});
     }catch{warnings.push(file.path+": "+plugin.t("Некорректный YAML: заметка пропущена."));}
@@ -289,7 +299,7 @@ class ScanModal extends Modal {
     const start=c.createEl("button",{text:this.plugin.t("Собрать очередь"),cls:"mod-cta"});start.addEventListener("click",async()=>{if(this.busy)return;const seq=++this.serial;this.busy=true;start.disabled=true;try{const result=await scanNotes(this.plugin,this.folder.value,this.kind,this.recursive.checked);if(this.closed||seq!==this.serial)return;this.rows=result.rows;this.index=0;this.work.empty();for(const message of result.warnings)this.work.createEl("p",{text:message});if(!this.queue)this.queue=c.createDiv();await this.showCurrent();}catch(e){if(!this.closed)this.work.setText(this.plugin.t(e.message));}finally{this.busy=false;start.disabled=false;}});
     this.work=c.createDiv();this.undo=c.createEl("button",{text:this.plugin.t("Отменить последнее заполнение")});this.undo.disabled=!this.plugin.lastMetadataChange;this.undo.addEventListener("click",async()=>{if(this.busy)return;this.busy=true;this.undo.disabled=true;try{await this.plugin.enqueueAdd(()=>this.plugin.undoMetadata());}catch(e){new Notice(this.plugin.t(e.message));}finally{this.busy=false;this.undo.disabled=!this.plugin.lastMetadataChange;}});
   }
-  async showCurrent(){const seq=++this.serial;if(this.closed)return;if(this.stage){this.removeChild(this.stage);this.stage=null;}this.stage=this.addChild(new Component());const c=this.queue||this.work;c.empty();const row=this.rows[this.index];if(!row){c.createEl("p",{text:this.plugin.t("Очередь завершена.")});return;}
+  async showCurrent(){const seq=++this.serial;if(this.closed)return;if(this.stage){this.stage.unload();this.stage=null;}this.stage=new Component();this.stage.load();const c=this.queue||this.work;c.empty();const row=this.rows[this.index];if(!row){c.createEl("p",{text:this.plugin.t(this.rows.length?"Очередь завершена.":"Подходящих заметок в папке нет. Проверьте папку и поле type (film или book).")});return;}
     c.createEl("h3",{text:(this.index+1)+" / "+this.rows.length+" · "+row.file.path});const open=c.createEl("button",{text:this.plugin.t("Открыть заметку")});this.stage.registerDomEvent(open,"click",()=>this.app.workspace.getLeaf("tab").openFile(row.file));
     const query=c.createEl("input");query.value=row.query;query.setAttribute("aria-label",this.plugin.t("Название"));const y=c.createEl("input");y.value=row.year;y.setAttribute("aria-label",this.plugin.t("Год"));if(this.kind!=="film")y.hidden=true;
     const find=c.createEl("button",{text:this.plugin.t("Найти варианты")}),skip=c.createEl("button",{text:this.plugin.t("Пропустить")});this.stage.registerDomEvent(skip,"click",()=>{if(this.busy)return;this.index++;this.showCurrent();});
@@ -300,9 +310,9 @@ class ScanModal extends Modal {
         const save=preview.createEl("button",{text:this.plugin.t("Заполнить пустые поля"),cls:"mod-cta"});this.stage.registerDomEvent(save,"click",async()=>{if(this.busy||this.closed||seq!==this.serial||selection!==request)return;this.busy=true;save.disabled=true;try{await this.plugin.enqueueAdd(()=>this.plugin.mergeMetadata(row.file,rec,raw));this.undo.disabled=false;if(!this.closed){this.index++;await this.showCurrent();}}catch(e){if(!this.closed)preview.createEl("p",{text:this.plugin.t(e.message)});}finally{this.busy=false;save.disabled=false;}});
       }catch(e){if(!this.closed&&seq===this.serial&&selection===request)preview.setText(this.plugin.t(e.message));}});}
     }catch(e){if(!this.closed&&seq===this.serial&&ticket===request)result.setText(this.plugin.t(e.message));}};
-    this.stage.registerDomEvent(find,"click",search);this.stage.registerDomEvent(query,"input",()=>{++request;preview.empty();});this.stage.registerDomEvent(y,"input",()=>{++request;preview.empty();});await search();
+    this.stage.registerDomEvent(find,"click",search);this.stage.registerDomEvent(query,"input",()=>{++request;preview.empty();});this.stage.registerDomEvent(y,"input",()=>{++request;preview.empty();});void search();
   }
-  onClose(){this.closed=true;++this.serial;if(this.stage)this.removeChild(this.stage);this.contentEl.empty();}
+  onClose(){this.closed=true;++this.serial;if(this.stage)this.stage.unload();this.contentEl.empty();}
 }
 
 
@@ -315,7 +325,7 @@ function validTaskDate(value){if(!value)return true;if(!/^\d{4}-\d{2}-\d{2}$/.te
 class TaskNotesModal extends Modal {
   constructor(plugin,file){super(plugin.app);this.plugin=plugin;this.file=file;this.closed=false;this.busy=false;this.serial=0;}
   onOpen(){this.render().catch(e=>{if(!this.closed)this.contentEl.setText(this.plugin.t(e.message));});}
-  async render(){const seq=++this.serial,c=this.contentEl;c.empty();c.addClass("ksandr-media-picker");if(this.stage)this.removeChild(this.stage);this.stage=this.addChild(new Component());
+  async render(){const seq=++this.serial,c=this.contentEl;c.empty();c.addClass("ksandr-media-picker");if(this.stage)this.stage.unload();this.stage=new Component();this.stage.load();
     c.createEl("h2",{text:this.plugin.t("В задачу — TaskNotes")});
     let api,media,tasks;try{api=this.plugin.taskNotesApi();media=await this.plugin.mediaForTask(this.file);if(typeof api.lifecycle?.ready==="function")await api.lifecycle.ready();tasks=await api.tasks.list();if(!Array.isArray(tasks))throw new Error("Не удалось получить задачи TaskNotes.");}catch(e){if(!this.closed&&seq===this.serial){c.createEl("p",{text:this.plugin.t(e.message)});const retry=c.createEl("button",{text:this.plugin.t("Обновить")});this.stage.registerDomEvent(retry,"click",()=>this.render());}return;}
     if(this.closed||seq!==this.serial)return;
@@ -340,7 +350,7 @@ class TaskNotesModal extends Modal {
     const filter=()=>{results.empty();const tokens=titleKey(query.value).split(" ").filter(Boolean),matches=tasks.filter(task=>typeof task.path==="string"&&task.path!==this.file.path&&!refs.has(task.path)&&!task.archived&&tokens.every(token=>titleKey(task.title||task.path).includes(token)));for(const task of matches.slice(0,30)){const button=results.createEl("button",{text:[task.title||task.path,task.status].filter(Boolean).join(" · ")+" · "+this.plugin.t("Добавить ссылку"),cls:"kmp-result"});this.stage.registerDomEvent(button,"click",()=>run(()=>this.plugin.enqueueAdd(()=>this.plugin.linkMediaTask(this.file,task.path))));}if(matches.length>30)results.createEl("p",{text:this.plugin.t("Уточните поиск — показаны первые 30 задач.")});if(!matches.length)results.createEl("p",{text:this.plugin.t("Задачи не найдены.")});};this.stage.registerDomEvent(query,"input",filter);filter();
     if(this.plugin.lastTaskLink){const undo=c.createEl("button",{text:this.plugin.t("Отменить последнюю привязку")});this.stage.registerDomEvent(undo,"click",()=>run(()=>this.plugin.enqueueAdd(()=>this.plugin.undoTaskLink())));}
   }
-  onClose(){this.closed=true;++this.serial;if(this.stage)this.removeChild(this.stage);this.contentEl.empty();}
+  onClose(){this.closed=true;++this.serial;if(this.stage)this.stage.unload();this.contentEl.empty();}
 }
 
 class PickerModal extends Modal {

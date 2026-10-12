@@ -195,5 +195,6 @@
   "Чтение / просмотр": "Reading / watching",
   "Таймер запущен.": "Timer started.",
   "Таймер остановлен.": "Timer stopped.",
-  "Добавить открытую карточку в TaskNotes": "Add the open media note to TaskNotes"
+  "Добавить открытую карточку в TaskNotes": "Add the open media note to TaskNotes",
+  "Подходящих заметок в папке нет. Проверьте папку и поле type (film или book).": "No matching notes in this folder. Check the folder and the type property (film or book)."
 }
