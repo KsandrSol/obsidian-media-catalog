@@ -2,8 +2,9 @@
 
 A local movie and book library for Obsidian using the built-in Bases plugin. Open the library, switch between movies and books, and use Add above the embedded catalog to search by title and choose a specific movie or book edition. Cards are ordinary Markdown notes and catalogs are ordinary Base files, usable without this plugin.
 
-## Version 0.4.0
+## Version 0.5.0
 
+- Optional TaskNotes integration: create or attach a task, navigate both directions, and explicitly start/stop time tracking.
 - Open a note by its cover, title or Open note button; it opens in a new tab so the library remains available.
 - One library tab with explicit Cards, Table and Kanban buttons, movies/books tabs and Add above the catalog.
 - Cards show a poster or cover, title, author/director, year, synopsis and a status selector. Failed images show a readable placeholder.
@@ -41,6 +42,20 @@ Click Scan folder beside Add in either catalog, or run Scan movie folder / Scan 
 The queue searches one note at a time as you review it; it does not launch a burst of requests for the whole folder. Edit the query and click Find matches, select a result, inspect the proposed empty fields and click Fill empty fields, or Skip. Wikidata supplies structured film metadata and a short entity description, not a full synopsis or guaranteed poster; only recognized film classes are offered. Open Library supplies specific editions, which may omit recent or local titles. Existing values, including manually corrected metadata, are always kept; this version has no replace-filled-fields option. Text, file names, personal ratings, dates, statuses, tags and highlights are unchanged. The default provider preference is synchronized in plugin settings; API credentials are device-local, so Automatic can choose different providers on different devices.
 
 Each accepted update first creates an exact original-note backup in Media catalog backups, then atomically fills the empty frontmatter fields. A changed note is rejected instead of applying a stale preview. Undo last metadata update restores the last accepted file in the current session only if it has not been edited since. After restarting or later editing, inspect the backup and restore the needed fields manually. The review queue is session-local; closing it stops progression and a new scan starts a new queue. Search results are not written unless you accept a preview.
+
+## TaskNotes integration
+
+TaskNotes is optional and must already be installed and enabled with Runtime API v1, tasks.read and tasks.write capabilities. The integration uses TaskNotes' documented in-process API; no HTTP server, API token or companion plugin installation is needed. Unsupported versions show a message; the catalog remains usable. The runtime API is documented at https://tasknotes.dev/obsidian/javascript-api/.
+
+In Cards or Kanban click Add to task. From an ordinary movie/book note, including one opened from native Table, run Add the open media note to TaskNotes. The dialog offers a task title, an optional scheduled date, existing linked tasks and a search of existing tasks. Create task uses TaskNotes' own creation service, folder, templates, default status and priority. The task body contains a link to the movie/book note. Attach an existing task adds that link to its body without replacing existing text, frontmatter or personal settings.
+
+The media note stores a media_catalog_tasks list of ordinary wiki links and shows buttons to open them. Obsidian's link resolver is used to find renamed tasks when the vault updates its links. A task already linked through this property or a full-path source link in its body is reused instead of duplicated. Select Create a separate task or session to intentionally create another reading/viewing session. Completing a session does not automatically complete the book or film; the integration subscribes to no task-status automation.
+
+Start now explicitly starts TaskNotes time tracking and opens the task. Stop timer explicitly stops that task's timer. Starting an already active task is a no-op; if another task timer is running, stop it in TaskNotes first. Timer actions are hidden when the required time.read / time.write APIs are unavailable. The integration does not set task or media statuses to guessed values.
+
+Before linking, original contents of all files that will change are backed up in Media catalog backups. Two-file updates check for stale contents and roll back the first change if the second fails; a concurrent edit is never overwritten during rollback. Undo last task link restores the last association's changed files only if none have been edited since. For a newly created task, undo restores the media note's added backlink and keeps the task, including its original source link. It never deletes tasks. Timer start/stop also backs up the task note before calling TaskNotes. If task creation succeeds but its backlink cannot be saved, the task is opened with a notice; reattaching recovers it without creating a duplicate.
+
+The media plugin sends task operations only to TaskNotes inside Obsidian; task text is not sent to metadata providers. TaskNotes remains responsible for its own configured calendar or other integrations. Existing user properties, personal ratings, reading/viewing statuses and note bodies are retained except for explicitly added links. If media_catalog_tasks already contains an incompatible manual value, linking refuses to replace it. Automatic undo lasts for the current plugin session; backup notes remain after restart. Runtime integration tests use an API test double; real desktop/mobile TaskNotes behavior still needs checking on devices.
 
 ## Installation and update
 

@@ -30,3 +30,6 @@
 
 .ksandr-media-picker select { width: 100%; min-height: 44px; margin-bottom: .75em; }
 .ksandr-media-picker input[type="checkbox"] { width: auto; min-height: auto; }
+
+.ksandr-media-picker .kmp-task-row { border: 1px solid var(--background-modifier-border); padding: var(--size-4-2); margin-bottom: var(--size-4-2); border-radius: var(--radius-m); }
+.ksandr-media-picker .kmp-task-row button { min-height: 44px; height: auto; white-space: normal; margin: var(--size-4-1); }

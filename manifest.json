@@ -1,9 +1,9 @@
 {
   "id": "ksandr-media-picker",
   "name": "Media catalog",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "minAppVersion": "1.9.3",
-  "description": "Movie and book catalogs with cards, native Bases tables, Kanban and title lookup.",
+  "description": "Movie and book catalogs with title search, native Bases, Kanban and optional TaskNotes integration.",
   "author": "ksandrsol",
   "isDesktopOnly": false
 }

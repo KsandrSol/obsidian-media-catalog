@@ -305,6 +305,44 @@ class ScanModal extends Modal {
   onClose(){this.closed=true;++this.serial;if(this.stage)this.removeChild(this.stage);this.contentEl.empty();}
 }
 
+
+function mediaWikiLink(file){if(!file?.path||file.extension!=="md"||/[\[\]#^|\r\n]/.test(file.path))throw new Error("Невозможно создать ссылку на этот файл.");return "[["+file.path.replace(/\.md$/,"")+"]]";}
+function linkedTaskPaths(app,file,values){
+  const links=values.media_catalog_tasks;if(links==null)return [];if(!Array.isArray(links)||links.some(link=>typeof link!=="string"))throw new Error("Поле media_catalog_tasks должно содержать список ссылок.");
+  return links.map(link=>{const name=link.replace(/^\[\[|\]\]$/g,"").split("|")[0];return app.metadataCache?.getFirstLinkpathDest(name,file.path)?.path||(name.endsWith(".md")?name:name+".md");});
+}
+function validTaskDate(value){if(!value)return true;if(!/^\d{4}-\d{2}-\d{2}$/.test(value))return false;const date=new Date(value+"T00:00:00Z");return Number.isFinite(date.getTime())&&date.toISOString().slice(0,10)===value;}
+class TaskNotesModal extends Modal {
+  constructor(plugin,file){super(plugin.app);this.plugin=plugin;this.file=file;this.closed=false;this.busy=false;this.serial=0;}
+  onOpen(){this.render().catch(e=>{if(!this.closed)this.contentEl.setText(this.plugin.t(e.message));});}
+  async render(){const seq=++this.serial,c=this.contentEl;c.empty();c.addClass("ksandr-media-picker");if(this.stage)this.removeChild(this.stage);this.stage=this.addChild(new Component());
+    c.createEl("h2",{text:this.plugin.t("В задачу — TaskNotes")});
+    let api,media,tasks;try{api=this.plugin.taskNotesApi();media=await this.plugin.mediaForTask(this.file);if(typeof api.lifecycle?.ready==="function")await api.lifecycle.ready();tasks=await api.tasks.list();if(!Array.isArray(tasks))throw new Error("Не удалось получить задачи TaskNotes.");}catch(e){if(!this.closed&&seq===this.serial){c.createEl("p",{text:this.plugin.t(e.message)});const retry=c.createEl("button",{text:this.plugin.t("Обновить")});this.stage.registerDomEvent(retry,"click",()=>this.render());}return;}
+    if(this.closed||seq!==this.serial)return;
+    const refs=new Set(linkedTaskPaths(this.app,this.file,media.values)),mediaLink=mediaWikiLink(this.file),linked=[];
+    for(const task of tasks){if(typeof task.path!=="string")continue;const file=this.app.vault.getAbstractFileByPath(task.path);if(file?.extension!=="md")continue;let linkedByBody=false;try{linkedByBody=(await this.app.vault.read(file)).includes(mediaLink);}catch{}if(this.closed||seq!==this.serial)return;if(refs.has(task.path)||linkedByBody)linked.push(task);}
+    c.createEl("p",{text:String(media.values.title||this.file.basename)});c.createEl("p",{text:this.plugin.t("Задача и карточка связаны ссылками. Статусы книги или фильма автоматически не меняются.")});
+    const message=c.createEl("p");message.setAttribute("role","status");
+    const run=async action=>{if(this.busy||this.closed)return;this.busy=true;try{await action();if(!this.closed)await this.render();}catch(e){if(!this.closed&&seq===this.serial)message.setText(this.plugin.t(e.message));else if(!this.closed)new Notice(this.plugin.t(e.message));}finally{this.busy=false;}};
+    const buttons=(task,parent)=>{const open=parent.createEl("button",{text:this.plugin.t("Открыть задачу")});this.stage.registerDomEvent(open,"click",()=>run(()=>this.plugin.openTaskNote(task.path)));
+      if(api.hasCapability("time.write")&&api.hasCapability("time.read")&&typeof api.time?.start==="function"&&typeof api.time?.active==="function"){
+        const start=parent.createEl("button",{text:this.plugin.t("Начать сейчас")});this.stage.registerDomEvent(start,"click",()=>run(()=>this.plugin.enqueueAdd(()=>this.plugin.startMediaTask(task.path))));
+        if(typeof api.time.stop==="function"){const stop=parent.createEl("button",{text:this.plugin.t("Остановить таймер")});this.stage.registerDomEvent(stop,"click",()=>run(()=>this.plugin.enqueueAdd(()=>this.plugin.stopMediaTask(task.path))));}
+      }
+    };
+    if(linked.length){c.createEl("h3",{text:this.plugin.t("Связанные задачи")});for(const task of linked){const row=c.createDiv({cls:"kmp-task-row"});row.createEl("p",{text:[task.title,task.status].filter(Boolean).join(" · ")});buttons(task,row);}}
+    const titleLabel=c.createEl("label",{text:this.plugin.t("Название задачи")}),title=titleLabel.createEl("input");title.value=this.plugin.t(media.values.type==="book"?"Читать":"Посмотреть")+" — "+String(media.values.title||this.file.basename);title.setAttribute("aria-label",this.plugin.t("Название задачи"));
+    const dateLabel=c.createEl("label",{text:this.plugin.t("Запланировать на — необязательно")}),date=dateLabel.createEl("input",{attr:{type:"date"}});date.setAttribute("aria-label",this.plugin.t("Запланировать на — необязательно"));
+    let allowSeparate=null;if(linked.length){const separate=c.createEl("label",{text:this.plugin.t("Создать отдельную задачу или сеанс")});allowSeparate=separate.createEl("input",{attr:{type:"checkbox"}});}
+    const create=c.createEl("button",{text:this.plugin.t("Создать задачу"),cls:"mod-cta"});create.disabled=linked.length>0;if(allowSeparate)this.stage.registerDomEvent(allowSeparate,"change",()=>{create.disabled=!allowSeparate.checked;});
+    this.stage.registerDomEvent(create,"click",()=>run(()=>this.plugin.enqueueAdd(()=>this.plugin.createMediaTask(this.file,title.value,date.value,Boolean(allowSeparate?.checked)))));
+    c.createEl("h3",{text:this.plugin.t("Добавить в существующую задачу")});const query=c.createEl("input",{attr:{type:"search",placeholder:this.plugin.t("Поиск задач по названию")}});query.setAttribute("aria-label",this.plugin.t("Поиск задач по названию"));const results=c.createDiv({cls:"kmp-results"});
+    const filter=()=>{results.empty();const tokens=titleKey(query.value).split(" ").filter(Boolean),matches=tasks.filter(task=>typeof task.path==="string"&&task.path!==this.file.path&&!refs.has(task.path)&&!task.archived&&tokens.every(token=>titleKey(task.title||task.path).includes(token)));for(const task of matches.slice(0,30)){const button=results.createEl("button",{text:[task.title||task.path,task.status].filter(Boolean).join(" · ")+" · "+this.plugin.t("Добавить ссылку"),cls:"kmp-result"});this.stage.registerDomEvent(button,"click",()=>run(()=>this.plugin.enqueueAdd(()=>this.plugin.linkMediaTask(this.file,task.path))));}if(matches.length>30)results.createEl("p",{text:this.plugin.t("Уточните поиск — показаны первые 30 задач.")});if(!matches.length)results.createEl("p",{text:this.plugin.t("Задачи не найдены.")});};this.stage.registerDomEvent(query,"input",filter);filter();
+    if(this.plugin.lastTaskLink){const undo=c.createEl("button",{text:this.plugin.t("Отменить последнюю привязку")});this.stage.registerDomEvent(undo,"click",()=>run(()=>this.plugin.enqueueAdd(()=>this.plugin.undoTaskLink())));}
+  }
+  onClose(){this.closed=true;++this.serial;if(this.stage)this.removeChild(this.stage);this.contentEl.empty();}
+}
+
 class PickerModal extends Modal {
   constructor(plugin,kind) { super(plugin.app);this.plugin=plugin;this.kind=kind;this.seq=0;this.closed=true;this.busy=false;this.allowSeparate=false; }
   onOpen() {
@@ -442,6 +480,9 @@ class CatalogWidget extends MarkdownRenderChild {
     const creator=fm.author||fm.director;card.createEl("p",{text:[Array.isArray(creator)?creator.join(", "):creator,fm.year].filter(Boolean).join(" · "),cls:"kmp-card-meta"});
     card.createEl("p",{text:summary||this.plugin.t("Нет описания"),cls:"kmp-card-summary"});
     const open=card.createEl("button",{text:this.plugin.t("Открыть заметку"),cls:"kmp-card-open",attr:{type:"button"}});this.renderer.registerDomEvent(open,"click",openNote);
+    const task=card.createEl("button",{text:this.plugin.t("В задачу"),cls:"kmp-card-open",attr:{type:"button"}});this.renderer.registerDomEvent(task,"click",()=>this.plugin.openTaskModal(file));
+    let taskPaths=[];try{taskPaths=linkedTaskPaths(this.plugin.app,file,fm);}catch(e){card.createEl("p",{text:this.plugin.t(e.message),cls:"kmp-help"});}
+    for(const path of taskPaths){const taskFile=this.plugin.app.vault.getAbstractFileByPath(path);if(taskFile?.extension==="md"){const linked=card.createEl("button",{text:this.plugin.t("Задача: ")+taskFile.basename,cls:"kmp-card-open"});this.renderer.registerDomEvent(linked,"click",()=>this.plugin.openTaskNote(path).catch(e=>new Notice(this.plugin.t(e.message))));}}
     const label=card.createEl("label",{text:this.plugin.t("Статус")}),select=label.createEl("select");select.setAttribute("aria-label",this.plugin.t("Статус")+": "+String(fm.title||file.basename));
     const current=statusCode(fm.status);if(current==="other")select.createEl("option",{text:typeof fm.status==="string"?fm.status:this.plugin.t("Без статуса"),attr:{value:"other"}});
     for(const code of STATUS_CODES)select.createEl("option",{text:statusLabel(this.kind,code,this.plugin.locale),attr:{value:code}});select.value=current;
@@ -497,6 +538,39 @@ class PickerSettings extends PluginSettingTab {
   }
 }
 class MediaPicker extends Plugin {
+  taskNotesApi(capability="tasks.write"){
+    const registry=this.app.plugins,plugin=typeof registry?.getPlugin==="function"?registry.getPlugin("tasknotes"):registry?.plugins?.tasknotes,api=plugin?.api;
+    if(api?.apiVersion!==1||typeof api.hasCapability!=="function"||!api.hasCapability("tasks.read")||!api.hasCapability(capability)||typeof api.tasks?.list!=="function"||typeof api.tasks?.get!=="function"||typeof api.tasks?.create!=="function")throw new Error(this.t("Включите TaskNotes с поддержкой Runtime API v1. Плагин не устанавливается автоматически."));return api;
+  }
+  async mediaForTask(file){if(this.app.vault.getAbstractFileByPath(file.path)!==file||file.extension!=="md"||file.path.startsWith("Media catalog backups/"))throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));const raw=await this.app.vault.read(file),parsed=strictFrontmatter(raw);if(!["film","book"].includes(parsed.values.type))throw new Error(this.t("Откройте карточку фильма или книги."));linkedTaskPaths(this.app,file,parsed.values);return {raw,...parsed};}
+  openTaskModal(file){const modal=new TaskNotesModal(this,file);this.modals.add(modal);const original=modal.onClose.bind(modal);modal.onClose=()=>{original();this.modals.delete(modal);};modal.open();}
+  async openTaskNote(path){const file=this.app.vault.getAbstractFileByPath(path);if(file?.extension!=="md")throw new Error(this.t("Файл задачи не найден."));await this.app.workspace.getLeaf("tab").openFile(file);}
+  async createMediaTask(file,title,scheduled="",allowSeparate=false){
+    const api=this.taskNotesApi(),media=await this.mediaForTask(file);title=cleanTitle(title);if(!title)throw new Error(this.t("Укажите название задачи."));if(!validTaskDate(scheduled))throw new Error(this.t("Неверная дата задачи."));
+    if(!allowSeparate){const refs=new Set(linkedTaskPaths(this.app,file,media.values)),link=mediaWikiLink(file);for(const task of await api.tasks.list()){if(refs.has(task.path)){new Notice(this.t("Связанная задача уже есть. Открываю её."));await this.openTaskNote(task.path);return task;}const taskFile=this.app.vault.getAbstractFileByPath(task.path);if(taskFile?.extension==="md"&&(await this.app.vault.read(taskFile)).includes(link)){await this.linkMediaTask(file,task.path);new Notice(this.t("Связанная задача уже есть. Открываю её."));await this.openTaskNote(task.path);return task;}}}
+    const task=await api.tasks.create({title,...(scheduled?{scheduled}:{}),details:mediaWikiLink(file),creationContext:"api"},{source:ID,reason:"user created a linked media task"});
+    if(typeof task?.path!=="string")throw new Error(this.t("TaskNotes не вернул путь задачи. Проверьте список задач перед повтором."));
+    try{await this.linkMediaTask(file,task.path);}catch{new Notice(this.t("Задача создана, но обратная ссылка не сохранена. Откройте задачу и повторите привязку."));await this.openTaskNote(task.path);return task;}
+    await this.openTaskNote(task.path);return task;
+  }
+  async applyTaskSnapshot(change,before,after){if(this.app.vault.getAbstractFileByPath(change.file.path)!==change.file)throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));return this.app.vault.process(change.file,current=>{if(this.app.vault.getAbstractFileByPath(change.file.path)!==change.file||current!==before)throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));return after;});}
+  async linkMediaTask(file,path){
+    const api=this.taskNotesApi(),task=await api.tasks.get(path),taskFile=this.app.vault.getAbstractFileByPath(path);if(!task||taskFile?.extension!=="md"||taskFile===file||path.startsWith("Media catalog backups/"))throw new Error(this.t("Файл задачи не найден."));
+    const media=await this.mediaForTask(file),taskRaw=await this.app.vault.read(taskFile),link=mediaWikiLink(file),refs=linkedTaskPaths(this.app,file,media.values),changes=[];
+    if(!taskRaw.includes(link))changes.push({file:taskFile,before:taskRaw,after:taskRaw+(taskRaw.endsWith("\n")?"\n":"\n\n")+link+"\n"});
+    if(!refs.includes(path)){const after="---\n"+stringifyYaml({...media.values,media_catalog_tasks:[...arr(media.values.media_catalog_tasks),mediaWikiLink(taskFile)]}).trimEnd()+"\n---\n"+media.body;changes.push({file,before:media.raw,after});}
+    if(!changes.length)return task;
+    for(const change of changes)change.backup=await this.backupMetadata(change.file,change.before);
+    const written=[];try{for(const change of changes){if(this.app.vault.getAbstractFileByPath(change.file.path)!==change.file)throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));await this.applyTaskSnapshot(change,change.before,change.after);written.push(change);}}
+    catch(error){let rollbackFailed=false;for(const change of written.reverse()){try{await this.applyTaskSnapshot(change,change.after,change.before);}catch{rollbackFailed=true;}}if(rollbackFailed)throw new Error(this.t("Привязка прервана изменением файла. Проверьте ссылки и резервные копии в Media catalog backups."));throw error;}
+    this.lastTaskLink={changes};for(const widget of this.widgets)widget.refresh().catch(()=>{});new Notice(this.t("Задача связана с карточкой."));return task;
+  }
+  async undoTaskLink(){const last=this.lastTaskLink;if(!last)throw new Error(this.t("Нет изменения для отмены."));for(const change of last.changes)if(this.app.vault.getAbstractFileByPath(change.file.path)!==change.file||await this.app.vault.read(change.file)!==change.after)throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));
+    const undone=[];try{for(const change of [...last.changes].reverse()){await this.applyTaskSnapshot(change,change.after,change.before);undone.push(change);}}catch(error){let failed=false;for(const change of undone.reverse()){try{await this.applyTaskSnapshot(change,change.before,change.after);}catch{failed=true;}}if(failed)throw new Error(this.t("Привязка прервана изменением файла. Проверьте ссылки и резервные копии в Media catalog backups."));throw error;}this.lastTaskLink=null;for(const widget of this.widgets)widget.refresh().catch(()=>{});new Notice(this.t("Изменение отменено."));
+  }
+  async startMediaTask(path){const api=this.taskNotesApi("time.write");if(!api.hasCapability("time.read")||typeof api.time?.active!=="function"||typeof api.time?.start!=="function")throw new Error(this.t("В этой версии TaskNotes таймер недоступен."));const active=await api.time.active();if(active.some(entry=>entry.taskPath===path)){await this.openTaskNote(path);new Notice(this.t("Таймер этой задачи уже запущен."));return;}if(active.length)throw new Error(this.t("Уже идёт таймер другой задачи. Остановите его в TaskNotes перед запуском."));if(!await api.tasks.get(path))throw new Error(this.t("Файл задачи не найден."));const taskFile=this.app.vault.getAbstractFileByPath(path);if(taskFile?.extension!=="md")throw new Error(this.t("Файл задачи не найден."));await this.backupMetadata(taskFile,await this.app.vault.read(taskFile));await api.time.start(path,{description:this.t("Чтение / просмотр")},{source:ID,reason:"user started a media session"});await this.openTaskNote(path);new Notice(this.t("Таймер запущен."));}
+  async stopMediaTask(path){const api=this.taskNotesApi("time.write");if(!api.hasCapability("time.read")||typeof api.time?.active!=="function"||typeof api.time?.stop!=="function")throw new Error(this.t("В этой версии TaskNotes таймер недоступен."));const active=await api.time.active();if(active.some(entry=>entry.taskPath===path)){const taskFile=this.app.vault.getAbstractFileByPath(path);if(taskFile?.extension!=="md")throw new Error(this.t("Файл задачи не найден."));await this.backupMetadata(taskFile,await this.app.vault.read(taskFile));await api.time.stop(path,{source:ID,reason:"user stopped a media session"});}new Notice(this.t("Таймер остановлен."));}
+
   openScanner(kind){const modal=new ScanModal(this,kind);this.modals.add(modal);const original=modal.onClose.bind(modal);modal.onClose=()=>{original();this.modals.delete(modal);};modal.open();}
   async backupMetadata(file,raw){const folder="Media catalog backups";await ensureFolder(this.app.vault,folder);let path=folder+"/"+Date.now()+" — metadata — "+safeName(file.basename)+".md",n=0;while(this.app.vault.getAbstractFileByPath(path))path=folder+"/"+Date.now()+"-"+(++n)+" — metadata — "+safeName(file.basename)+".md";await this.app.vault.create(path,raw);return path;}
   async mergeMetadata(file,rec,expected){
@@ -572,6 +646,7 @@ class MediaPicker extends Plugin {
     this.addCommand({id:"add-film",name:this.t("Добавить фильм"),callback:()=>this.openPicker("film")});
     this.addCommand({id:"add-book",name:this.t("Добавить книгу"),callback:()=>this.openPicker("book")});
     for(const kind of ["film","book"])this.addCommand({id:"scan-"+kind,name:this.t(kind==="film"?"Сканировать папку кино":"Сканировать папку книг"),callback:()=>this.openScanner(kind)});
+    this.addCommand({id:"task-from-media-note",name:this.t("Добавить открытую карточку в TaskNotes"),callback:()=>{const file=this.app.workspace.getActiveFile?.();if(file)this.openTaskModal(file);else new Notice(this.t("Откройте карточку фильма или книги."));}});
     this.addRibbonIcon("library",this.t("Кино и книги"),()=>this.openCatalog());
     this.registerMarkdownCodeBlockProcessor("media-catalog",(source,element,ctx)=>{const kind=source.trim();if(!["film","book"].includes(kind)){element.setText(this.t("Укажите film или book внутри блока media-catalog."));return;}ctx.addChild(new CatalogWidget(this,element,kind,ctx.sourcePath));});
     this.addSettingTab(new PickerSettings(this.app,this));
@@ -579,4 +654,4 @@ class MediaPicker extends Plugin {
   onunload() {for(const m of this.modals||[])m.close();for(const w of this.widgets||[])w.unload();}
 }
 module.exports=MediaPicker;
-module.exports._test={ScanModal,scanNotes,metadataPatch,strictFrontmatter,providerSelect,Api,SearchController,canonicalISBN,safeName,frontmatter,duplicateFiles,addCard,cardText,PickerModal,CatalogWidget,CatalogView,catalogPath,catalogFiles,baseText,FOLDERS,BASES,statusCode,statusLabel,shortDescription,translate,usesLegacyStatuses};
+module.exports._test={TaskNotesModal,mediaWikiLink,linkedTaskPaths,validTaskDate,ScanModal,scanNotes,metadataPatch,strictFrontmatter,providerSelect,Api,SearchController,canonicalISBN,safeName,frontmatter,duplicateFiles,addCard,cardText,PickerModal,CatalogWidget,CatalogView,catalogPath,catalogFiles,baseText,FOLDERS,BASES,statusCode,statusLabel,shortDescription,translate,usesLegacyStatuses};
