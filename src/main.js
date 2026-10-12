@@ -1,5 +1,20 @@
 "use strict";
-const { Plugin, Modal, ItemView, Component, MarkdownRenderChild, MarkdownRenderer, PluginSettingTab, Setting, Notice, requestUrl, parseYaml, stringifyYaml, normalizePath } = require("obsidian");
+const { Plugin, Modal, ItemView, Component, MarkdownRenderChild, MarkdownRenderer, PluginSettingTab, Setting, Notice, requestUrl, parseYaml, stringifyYaml, normalizePath, getLanguage } = require("obsidian");
+const EN = require("./en.json");
+function translate(value,locale="ru") {if(locale==="ru"||typeof value!=="string")return value;if(EN[value])return EN[value];const prefix="Путь базы должен оканчиваться на ";return value.startsWith(prefix)?EN[prefix]+value.slice(prefix.length):value;}
+function defaultMetadataLocale(language) {const lang=String(language||"en").replace(/_/g,"-").toLowerCase();const regions={ru:"RU",en:"US",de:"DE",fr:"FR",es:"ES",it:"IT",pt:"BR",ja:"JP",ko:"KR",zh:"CN",nl:"NL",pl:"PL",uk:"UA",tr:"TR",ar:"SA",hi:"IN",sv:"SE",fi:"FI",cs:"CZ"};if(/^[a-z]{2,3}-[a-z]{2}$/.test(lang))return lang.split("-")[0]+"-"+lang.split("-")[1].toUpperCase();return regions[lang]?lang+"-"+regions[lang]:"en-US";}
+const STATUS_CODES=["planned","in_progress","completed","on_hold","dropped"];
+const STATUS_ALIASES={planned:["planned","want to watch","want to read","хочу посмотреть","хочу прочитать","в планах"],in_progress:["in_progress","watching","reading","смотрю","читаю","в процессе"],completed:["completed","watched","read","done","просмотрено","посмотрено","посмотрел","прочитано","прочитал","прочитана","завершено"],on_hold:["on_hold","on hold","paused","на паузе","отложено"],dropped:["dropped","abandoned","брошено","бросил"]};
+function statusCode(value) {const v=typeof value==="string"?value.trim().toLowerCase():"";return STATUS_CODES.find(k=>STATUS_ALIASES[k].includes(v))||"other";}
+function statusLabel(kind,code,locale) {return translate(({planned:kind==="film"?"Хочу посмотреть":"Хочу прочитать",in_progress:kind==="film"?"Смотрю":"Читаю",completed:kind==="film"?"Просмотрено":"Прочитано",on_hold:"На паузе",dropped:"Брошено",other:"Другие статусы"})[code],locale);}
+function usesLegacyStatuses(config) {const strings=[];const walk=value=>{if(typeof value==="string")strings.push(value);else if(Array.isArray(value))value.forEach(walk);else if(value&&typeof value==="object")Object.values(value).forEach(walk);};walk(config);return !strings.some(s=>s.includes('status == "planned"'))&&strings.some(s=>/status\s*==\s*"(?:хочу посмотреть|хочу прочитать)"/.test(s));}
+function shortDescription(raw,fm={}) {
+  const body=raw.replace(/^\ufeff?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/,"");
+  const heading=/(?:^|\n)## (?:О чём|О книге|Synopsis|About the book)[ \t]*\r?\n/.exec(body);
+  if(!heading)return cleanTitle(text(fm.summary)).slice(0,280);
+  const rest=body.slice(heading.index+heading[0].length),end=rest.search(/(?:^|\n)## /),section=end<0?rest:rest.slice(0,end);
+  return cleanTitle(section.replace(/\[([^\]]+)\]\([^)]*\)/g,"$1").replace(/[*_`]/g,"").replace(/\s+/g," ")).slice(0,280);
+}
 const ID = "ksandr-media-picker";
 const FOLDERS = { film: "Areas/Личное/Кино", book: "Areas/Личное/Книги" };
 const BASES = { film: "Areas/Личное/Кино.base", book: "Areas/Личное/Книги.base" };
@@ -16,9 +31,10 @@ function catalogFiles(app,folder) {
   const visit=file=>{if(Array.isArray(file.children))for(const child of file.children)visit(child);else if(file.extension==="md")files.push(file);};
   if(root)visit(root);return files;
 }
-function baseText(kind,folder) {
+function baseText(kind,folder,locale="ru") {
   const creator=kind==="film"?"director":"author";
-  return stringifyYaml({filters:{and:["file.inFolder("+JSON.stringify(folder)+")","type == "+JSON.stringify(kind)]},properties:{title:{displayName:"Название"},status:{displayName:"Статус"},rating:{displayName:"Моя оценка"},[creator]:{displayName:kind==="film"?"Режиссёр":"Автор"},year:{displayName:"Год"}},views:[{type:"cards",name:"Обложки",order:["file.name",creator,"year","status","rating"],image:"note.cover",imageFit:"contain",imageAspectRatio:1.5},{type:"table",name:"Все",order:["file.name",creator,"year","status","rating"],sort:[{property:"title",direction:"ASC"}]}]});
+  const tr=v=>translate(v,locale),order=["file.name",creator,"year","summary","status","rating"],cards={type:"cards",name:tr("Карточки"),order,image:"note.cover",imageFit:"contain",imageAspectRatio:0.67};
+  return stringifyYaml({filters:{and:["file.inFolder("+JSON.stringify(folder)+")","type == "+JSON.stringify(kind)]},properties:{title:{displayName:tr("Название")},status:{displayName:tr("Статус")},rating:{displayName:tr("Моя оценка")},[creator]:{displayName:tr(kind==="film"?"Режиссёр":"Автор")},year:{displayName:tr("Год")},summary:{displayName:tr("Описание")}},views:[cards,{type:"table",name:tr("Таблица"),order,sort:[{property:"title",direction:"ASC"}]},...STATUS_CODES.map(code=>({...cards,name:statusLabel(kind,code,locale),filters:STATUS_ALIASES[code].map(s=>"status == "+JSON.stringify(s)).join(" || ")}))]});
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const text = v => typeof v === "string" ? v.trim() : "";
@@ -56,8 +72,8 @@ function errorText(status) {
   return "Источник временно недоступен.";
 }
 class Api {
-  constructor(keys, transport=requestUrl, delay=sleep, now=()=>Date.now()) {
-    this.keys=keys; this.transport=transport; this.delay=delay; this.now=now; this.olTail=Promise.resolve(); this.lastOL=-Infinity;
+  constructor(keys, transport=requestUrl, delay=sleep, now=()=>Date.now(), metadataLocale=()=>"ru-RU") {
+    this.keys=keys; this.transport=transport; this.delay=delay; this.now=now; this.metadataLocale=metadataLocale;this.olTail=Promise.resolve(); this.lastOL=-Infinity;
   }
   async json(url, headers={}) {
     let r, timer;
@@ -88,7 +104,7 @@ class Api {
   }
   async search(kind, query, filmYear="") {
     if(kind==="film") {
-      const params={query,language:"ru-RU",include_adult:"false"};
+      const params={query,language:this.metadataLocale(),include_adult:"false"};
       if(filmYear) { if(!/^\d{4}$/.test(filmYear)) throw new Error("Год фильма: четыре цифры или пустое поле."); params.primary_release_year=filmYear; }
       const data=await this.tmdb("search/movie",params);
       return {items:arr(data.results).filter(m=>Number.isInteger(m.id)&&text(m.title||m.original_title)).slice(0,12).map(m=>({kind,source:"tmdb",id:String(m.id),title:cleanTitle(m.title||m.original_title),author:cleanTitle(m.original_title),year:year(m.release_date)})),warnings:[]};
@@ -120,7 +136,7 @@ class Api {
     const ratings=[], at=isoDate();
     if(item.source==="tmdb") {
       if(!/^\d+$/.test(item.id)) throw new Error("Некорректный идентификатор фильма.");
-      const m=await this.tmdb("movie/"+item.id,{language:"ru-RU",append_to_response:"credits,external_ids"});
+      const m=await this.tmdb("movie/"+item.id,{language:this.metadataLocale(),append_to_response:"credits,external_ids"});
       if(String(m.id)!==item.id || !text(m.title||m.original_title)) throw new Error("Источник вернул другой фильм.");
       const src="https://www.themoviedb.org/movie/"+item.id;
       if(number(m.vote_average)!==null && number(m.vote_count)>0) ratings.push(`TMDB: ${m.vote_average} /10, оценок ${m.vote_count}, на ${at} — ${src}`);
@@ -171,12 +187,12 @@ async function duplicateFiles(app, rec, folders=FOLDERS) {
   }
   return {matches,similar};
 }
-function cardText(rec) {
+function cardText(rec,locale="ru",initialStatus="planned") {
   const f=rec.fields;
-  const fm={...f,type:rec.kind,status:rec.kind==="film"?"хочу посмотреть":"хочу прочитать",rating:null,started:null,finished:null,added:isoDate(),source:rec.source,source_id:rec.source_id,tags:[rec.kind==="film"?"кино":"книга"]};
+  const fm={...f,type:rec.kind,status:initialStatus,summary:cleanTitle((rec.description||"").replace(/\s+/g," ")).slice(0,280),rating:null,started:null,finished:null,added:isoDate(),source:rec.source,source_id:rec.source_id,tags:[rec.kind==="film"?"movie":"book"]};
   if(rec.kind==="book") { fm.original_title=null;fm.highlights=null;fm.isbn=arr(f.isbn).map(String); }
-  const heading=rec.kind==="film"?"О чём":"О книге";
-  return "---\n"+stringifyYaml(fm).trimEnd()+"\n---\n\n# "+f.title+"\n\n## "+heading+"\n\n"+(rec.description||"")+"\n\n## "+(rec.kind==="film"?"Мой отзыв":"Мои мысли")+"\n\n## Источник метаданных\n\n"+f.source_url+"\n\n";
+  const heading=translate(rec.kind==="film"?"О чём":"О книге",locale);
+  return "---\n"+stringifyYaml(fm).trimEnd()+"\n---\n\n# "+f.title+"\n\n## "+heading+"\n\n"+(rec.description||"")+"\n\n## "+translate(rec.kind==="film"?"Мой отзыв":"Мои мысли",locale)+"\n\n## "+translate("Источник метаданных",locale)+"\n\n"+f.source_url+"\n\n";
 }
 async function ensureFolder(vault,folder) {
   let path="";for(const part of folder.split("/")) {path=path?path+"/"+part:part;
@@ -185,7 +201,7 @@ async function ensureFolder(vault,folder) {
     else { try { await vault.createFolder(path); } catch(e) { if(!Array.isArray(vault.getAbstractFileByPath(path)?.children))throw e; } }
   }
 }
-async function addCard(app,rec,allowSeparate=false,folders=FOLDERS) {
+async function addCard(app,rec,allowSeparate=false,folders=FOLDERS,locale="ru",initialStatus="planned") {
   if(!folders[rec.kind] || !text(rec.fields?.title) || !text(rec.source_id) || !validURL(rec.fields.source_url))throw new Error("Некорректная карточка.");
   const folder=catalogPath(folders[rec.kind]);
   const found=await duplicateFiles(app,rec,folders);
@@ -199,17 +215,17 @@ async function addCard(app,rec,allowSeparate=false,folders=FOLDERS) {
     path=folder+"/"+safeName(base+" — "+discriminator)+".md";
   }
   if(app.vault.getAbstractFileByPath(path))throw new Error("Файл уже существует. Откройте его и проверьте издание.");
-  const file=await app.vault.create(path,cardText(rec)); return {created:file};
+  const file=await app.vault.create(path,cardText(rec,locale,initialStatus)); return {created:file};
 }
 class PickerModal extends Modal {
   constructor(plugin,kind) { super(plugin.app);this.plugin=plugin;this.kind=kind;this.seq=0;this.closed=true;this.busy=false;this.allowSeparate=false; }
   onOpen() {
     this.closed=false;const c=this.contentEl;c.addClass("ksandr-media-picker");
-    c.createEl("h2",{text:this.kind==="film"?"Добавить фильм":"Добавить книгу"});
-    this.query=c.createEl("input",{type:"search",placeholder:this.kind==="film"?"Название фильма":"Название книги; можно добавить автора"});
-    this.query.setAttribute("aria-label","Название");
-    if(this.kind==="film") {this.yearInput=c.createEl("input",{type:"text",placeholder:"Год — необязательно"});this.yearInput.setAttribute("inputmode","numeric");this.yearInput.setAttribute("aria-label","Год выпуска");}
-    this.status=c.createEl("p",{text:"Введите хотя бы два символа."});this.status.setAttribute("role","status");this.status.setAttribute("aria-live","polite");
+    c.createEl("h2",{text:this.kind==="film"?this.plugin.t("Добавить фильм"):this.plugin.t("Добавить книгу")});
+    this.query=c.createEl("input",{type:"search",placeholder:this.kind==="film"?this.plugin.t("Название фильма"):this.plugin.t("Название книги; можно добавить автора")});
+    this.query.setAttribute("aria-label",this.plugin.t("Название"));
+    if(this.kind==="film") {this.yearInput=c.createEl("input",{type:"text",placeholder:this.plugin.t("Год — необязательно")});this.yearInput.setAttribute("inputmode","numeric");this.yearInput.setAttribute("aria-label",this.plugin.t("Год выпуска"));}
+    this.status=c.createEl("p",{text:this.plugin.t("Введите хотя бы два символа.")});this.status.setAttribute("role","status");this.status.setAttribute("aria-live","polite");
     this.results=c.createDiv({cls:"kmp-results"});this.preview=c.createDiv({cls:"kmp-preview"});
     this.controller=new SearchController((q,y,partial)=>this.plugin.search?this.plugin.search(this.kind,q,y,partial):this.plugin.api.search(this.kind,q,y),state=>this.render(state));
     const change=()=>{++this.seq;this.record=null;this.allowSeparate=false;this.preview.empty();this.controller.input(this.query.value,this.yearInput?.value.trim()||"");};
@@ -218,9 +234,9 @@ class PickerModal extends Modal {
   }
   render(state) {
     this.results.empty();
-    const msg={idle:"Введите хотя бы два символа.",waiting:"",loading:"Ищу…",error:state.error,done:state.items?.length?"Выберите вариант.":"Ничего не найдено. Попробуйте название с автором или другой язык."};
-    this.status.setText(msg[state.state]||"");
-    for(const w of state.warnings||[])this.results.createEl("p",{text:w});
+    const msg={idle:this.plugin.t("Введите хотя бы два символа."),waiting:"",loading:this.plugin.t("Ищу…"),error:state.error,done:state.items?.length?this.plugin.t("Выберите вариант."):this.plugin.t("Ничего не найдено. Попробуйте название с автором или другой язык.")};
+    this.status.setText(this.plugin.t(msg[state.state]||""));
+    for(const w of state.warnings||[])this.results.createEl("p",{text:this.plugin.t(w)});
     for(const item of state.items||[]) {
       const button=this.results.createEl("button",{text:[item.title,item.author,item.year,item.publisher,item.language,item.source].filter(Boolean).join(" · "),cls:"kmp-result"});
       button.addEventListener("click",()=>this.select(item));
@@ -228,121 +244,191 @@ class PickerModal extends Modal {
   }
   async select(item) {
     if(item.source==="vault") {
-      ++this.seq;this.preview.empty();this.preview.createEl("h3",{text:item.title});this.preview.createEl("p",{text:"Эта карточка уже есть в каталоге."});
-      const b=this.preview.createEl("button",{text:"Открыть карточку",cls:"mod-cta"});
+      ++this.seq;this.preview.empty();this.preview.createEl("h3",{text:item.title});this.preview.createEl("p",{text:this.plugin.t("Эта карточка уже есть в каталоге.")});
+      const b=this.preview.createEl("button",{text:this.plugin.t("Открыть карточку"),cls:"mod-cta"});
       b.addEventListener("click",async()=>{const file=this.app.vault.getAbstractFileByPath(item.id);if(file&&item.id.startsWith(this.plugin.folders[this.kind]+"/")&&item.id.endsWith(".md")){await this.app.workspace.getLeaf(false).openFile(file);this.close();}});return;
     }
-    const seq=++this.seq;this.preview.empty();this.preview.createEl("p",{text:"Загружаю выбранное издание…"});
+    const seq=++this.seq;this.preview.empty();this.preview.createEl("p",{text:this.plugin.t("Загружаю выбранное издание…")});
     try {
       const rec=await this.plugin.api.details(item);if(this.closed||seq!==this.seq)return;
       this.record=rec;this.allowSeparate=false;this.showPreview(rec);
-    } catch(e) { if(!this.closed&&seq===this.seq){this.preview.empty();this.preview.createEl("p",{text:e.message});} }
+    } catch(e) { if(!this.closed&&seq===this.seq){this.preview.empty();this.preview.createEl("p",{text:this.plugin.t(e.message)});} }
   }
   showPreview(rec) {
     const p=this.preview;p.empty();p.createEl("h3",{text:rec.fields.title});
-    if(validURL(rec.fields.cover)){const img=p.createEl("img",{attr:{src:rec.fields.cover,alt:"Обложка",loading:"lazy"}});img.addClass("kmp-cover");}
-    for(const [label,key] of [["Автор / режиссёр",rec.kind==="film"?"director":"author"],["Год издания / выпуска","year"],["Первое издание","first_published"],["Издательство","publisher"],["Язык","language"],["Страниц","pages"],["ISBN","isbn"],["Длительность, мин","runtime"]]) {
+    p.createEl("p",{text:rec.description||this.plugin.t("Нет описания"),cls:"kmp-card-summary"});
+    if(validURL(rec.fields.cover)){const img=p.createEl("img",{attr:{src:rec.fields.cover,alt:this.plugin.t("Обложка"),loading:"lazy"}});img.addClass("kmp-cover");}
+    for(const [label,key] of [[this.plugin.t("Автор / режиссёр"),rec.kind==="film"?"director":"author"],[this.plugin.t("Год издания / выпуска"),"year"],[this.plugin.t("Первое издание"),"first_published"],[this.plugin.t("Издательство"),"publisher"],[this.plugin.t("Язык"),"language"],[this.plugin.t("Страниц"),"pages"],["ISBN","isbn"],[this.plugin.t("Длительность, мин"),"runtime"]]) {
       const value=rec.fields[key]; if(value!=null&&value!==""&&(!Array.isArray(value)||value.length))p.createEl("p",{text:label+": "+(Array.isArray(value)?value.join(", "):value)});
     }
-    p.createEl("a",{text:"Открыть источник",attr:{href:rec.fields.source_url,target:"_blank",rel:"noopener noreferrer"}});
-    this.addButton=p.createEl("button",{text:"Добавить в каталог",cls:"mod-cta"});this.addButton.disabled=this.busy;
+    p.createEl("a",{text:this.plugin.t("Открыть источник"),attr:{href:rec.fields.source_url,target:"_blank",rel:"noopener noreferrer"}});
+    this.addButton=p.createEl("button",{text:this.plugin.t("Добавить в каталог"),cls:"mod-cta"});this.addButton.disabled=this.busy;
     this.addButton.addEventListener("click",()=>this.add(rec));
   }
   async add(rec) {
     if(this.busy||this.closed)return;this.busy=true;this.addButton.disabled=true;
     try {
-      const result=await this.plugin.enqueueAdd(()=>addCard(this.app,rec,this.allowSeparate,this.plugin.folders));
+      const result=await this.plugin.enqueueAdd(async()=>addCard(this.app,rec,this.allowSeparate,this.plugin.folders,this.plugin.locale,await this.plugin.storedStatus(rec.kind,"planned")));
       if(this.closed)return;
       if(result.similar) {
-        this.preview.createEl("p",{text:"Карточка с таким названием уже есть. Проверьте автора и издание."});
-        for(const file of result.similar){const b=this.preview.createEl("button",{text:"Открыть: "+file.basename});b.addEventListener("click",()=>this.app.workspace.getLeaf(false).openFile(file));}
-        const b=this.preview.createEl("button",{text:"Подтверждаю: это другое издание / произведение"});
+        this.preview.createEl("p",{text:this.plugin.t("Карточка с таким названием уже есть. Проверьте автора и издание.")});
+        for(const file of result.similar){const b=this.preview.createEl("button",{text:this.plugin.t("Открыть: ")+file.basename});b.addEventListener("click",()=>this.app.workspace.getLeaf(false).openFile(file));}
+        const b=this.preview.createEl("button",{text:this.plugin.t("Подтверждаю: это другое издание / произведение")});
         b.addEventListener("click",()=>{this.allowSeparate=true;this.add(rec);});return;
       }
-      if(result.multiple)new Notice("Найдено несколько карточек с одним ID. Открыта первая; файлы не изменены.");
-      else new Notice(result.existing?"Карточка уже есть — открываю.":"Карточка добавлена.");
+      if(result.multiple)new Notice(this.plugin.t("Найдено несколько карточек с одним ID. Открыта первая; файлы не изменены."));
+      else new Notice(result.existing?this.plugin.t("Карточка уже есть — открываю."):this.plugin.t("Карточка добавлена."));
       await this.app.workspace.getLeaf(false).openFile(result.existing||result.created);this.close();
-    } catch(e) { if(!this.closed)this.preview.createEl("p",{text:e.message}); }
+    } catch(e) { if(!this.closed)this.preview.createEl("p",{text:this.plugin.t(e.message)}); }
     finally {this.busy=false;if(this.addButton)this.addButton.disabled=false;}
   }
   onClose() {this.closed=true;++this.seq;this.controller?.close();this.contentEl.empty();}
 }
 class CatalogWidget extends MarkdownRenderChild {
-  constructor(plugin,element,kind,sourcePath="") {super(element);this.plugin=plugin;this.element=element;this.kind=kind;this.sourcePath=sourcePath;this.serial=0;this.closed=false;}
-  onload() {this.closed=false;this.plugin.widgets.add(this);this.refresh().catch(()=>{if(!this.closed)new Notice("Не удалось открыть каталог.");});}
+  constructor(plugin,element,kind,sourcePath="",mode="cards") {super(element);this.plugin=plugin;this.element=element;this.kind=kind;this.sourcePath=sourcePath;this.mode=["cards","table","kanban"].includes(mode)?mode:"cards";this.serial=0;this.closed=false;}
+  onload() {this.closed=false;this.plugin.widgets.add(this);this.refresh().catch(()=>{if(!this.closed)new Notice(this.plugin.t("Не удалось открыть каталог."));});}
   async refresh() {
     const seq=++this.serial,c=this.element;c.empty();c.addClass("kmp-catalog");
     if(this.renderer){this.removeChild(this.renderer);this.renderer=null;}
     this.renderer=this.addChild(new Component());
     const bar=c.createDiv({cls:"kmp-catalog-bar"});
-    bar.createEl("h3",{text:this.kind==="film"?"Кино":"Книги"});
-    const add=bar.createEl("button",{text:this.kind==="film"?"＋ Добавить фильм":"＋ Добавить книгу",cls:"mod-cta"});
+    bar.createEl("h3",{text:this.kind==="film"?this.plugin.t("Кино"):this.plugin.t("Книги")});
+    const add=bar.createEl("button",{text:this.kind==="film"?this.plugin.t("＋ Добавить фильм"):this.plugin.t("＋ Добавить книгу"),cls:"mod-cta"});
     this.renderer.registerDomEvent(add,"click",()=>this.plugin.openPicker(this.kind));
+    const controls=c.createDiv({cls:"kmp-layouts"});controls.setAttribute("aria-label",this.plugin.t("Представления"));
+    for(const [mode,label] of [["cards",this.plugin.t("Карточки")],["table",this.plugin.t("Таблица")],["kanban",this.plugin.t("Канбан")]]) {
+      const button=controls.createEl("button",{text:this.plugin.t(label)});button.setAttribute("aria-pressed",String(this.mode===mode));
+      this.renderer.registerDomEvent(button,"click",()=>{this.mode=mode;this.onModeChange?.(mode);this.refresh().catch(()=>new Notice(this.plugin.t("Не удалось открыть каталог.")));});
+    }
+    const refresh=bar.createEl("button",{text:this.plugin.t("Обновить")});this.renderer.registerDomEvent(refresh,"click",()=>this.refresh());
     const basePath=this.plugin.bases[this.kind],base=this.plugin.app.vault.getAbstractFileByPath(basePath);
+    if(base?.extension==="base"&&this.mode!=="table"){const open=bar.createEl("button",{text:this.plugin.t("Открыть файл базы")});this.renderer.registerDomEvent(open,"click",()=>this.plugin.app.workspace.getLeaf(false).openFile(base));}
+    if(this.plugin.lastStatusChange){const undo=bar.createEl("button",{text:this.plugin.t("Отменить смену статуса")});this.renderer.registerDomEvent(undo,"click",async()=>{try{await this.plugin.enqueueAdd(()=>this.plugin.undoStatus());await this.refresh();}catch(e){new Notice(this.plugin.t(e.message));}});}
+    if(this.mode!=="table") {
+      c.createEl("p",{text:this.plugin.t(this.mode==="kanban"?this.plugin.t("Перетащите карточку в колонку или выберите статус в ней."):this.plugin.t("Обложки, названия, описания и выбор статуса.")),cls:"kmp-help"});
+      if(!base){const setup=bar.createEl("button",{text:this.plugin.t("Создать недостающий каталог")});this.renderer.registerDomEvent(setup,"click",async()=>{setup.disabled=true;try{await this.plugin.enqueueAdd(()=>this.plugin.createCatalog(this.kind));if(!this.closed&&seq===this.serial)await this.refresh();}catch(e){new Notice(this.plugin.t(e.message));}finally{setup.disabled=false;}});}
+      try{await this.renderCards(c,seq);}catch(e){if(!this.closed&&seq===this.serial)c.createEl("p",{text:this.plugin.t("Не удалось загрузить карточки.")});}return;
+    }
+    c.createEl("p",{text:this.plugin.t("Свойства и сортировка в штатном Bases."),cls:"kmp-help"});
     if(!base||base.extension!=="base") {
-      c.createEl("p",{text:"Файл базы пока не найден: "+basePath+". Проверьте путь в настройках или создайте каталог."});
-      const setup=c.createEl("button",{text:"Создать недостающий каталог"});
+      c.createEl("p",{text:this.plugin.t("Файл базы пока не найден: ")+basePath+this.plugin.t(". Проверьте путь в настройках или создайте каталог.")});
+      const setup=c.createEl("button",{text:this.plugin.t("Создать недостающий каталог")});
       this.renderer.registerDomEvent(setup,"click",async()=>{setup.disabled=true;try{await this.plugin.enqueueAdd(()=>this.plugin.createCatalog(this.kind));if(!this.closed&&seq===this.serial)await this.refresh();}catch(e){if(!this.closed)new Notice(e.message);}finally{setup.disabled=false;}});return;
     }
-    const open=bar.createEl("button",{text:"Открыть файл базы"});
+    const open=bar.createEl("button",{text:this.plugin.t("Открыть файл базы")});
     this.renderer.registerDomEvent(open,"click",()=>this.plugin.app.workspace.getLeaf(false).openFile(base));
     const target=c.createDiv({cls:"kmp-base markdown-rendered"});
-    try {await MarkdownRenderer.render(this.plugin.app,"![["+basePath+"]]",target,this.sourcePath,this.renderer);}
+    try {const config=parseYaml(await this.plugin.app.vault.read(base)),view=arr(config?.views).find(v=>v.type==="table");const suffix=typeof view?.name==="string"&&!/[\[\]|\r\n]/.test(view.name)?"#"+view.name:"";await MarkdownRenderer.render(this.plugin.app,"![["+basePath+suffix+"]]",target,this.sourcePath,this.renderer);}
     catch {if(!this.closed&&seq===this.serial)target.setText("Не удалось встроить Bases. Включите штатный плагин Bases и откройте файл базы кнопкой выше.");}
   }
+  async renderCards(container,seq) {
+    const items=[];
+    for(const file of catalogFiles(this.plugin.app,this.plugin.folders[this.kind])) {
+      const raw=await this.plugin.app.vault.read(file),fm=frontmatter(raw);if(fm.type===this.kind)items.push({file,fm,summary:shortDescription(raw,fm)});
+    }
+    if(this.closed||seq!==this.serial)return;
+    items.sort((a,b)=>String(a.fm.title||a.file.basename).localeCompare(String(b.fm.title||b.file.basename),this.plugin.locale));
+    const board=container.createDiv({cls:this.mode==="kanban"?"kmp-board":"kmp-card-grid"});
+    if(!items.length)container.createEl("p",{text:this.plugin.t("Карточек пока нет. Добавьте фильм или книгу.")});
+    if(this.mode==="kanban") {
+      const codes=[...STATUS_CODES,...(items.some(i=>statusCode(i.fm.status)==="other")?["other"]:[])];
+      for(const code of codes){const list=items.filter(i=>statusCode(i.fm.status)===code),column=board.createDiv({cls:"kmp-column"});column.createEl("h4",{text:statusLabel(this.kind,code,this.plugin.locale)+" · "+list.length});
+        if(code!=="other") {this.renderer.registerDomEvent(column,"dragover",event=>{event.preventDefault();});this.renderer.registerDomEvent(column,"drop",async event=>{event.preventDefault();const path=event.dataTransfer?.getData("application/x-media-catalog-note");const item=items.find(i=>i.file.path===path);if(item)await this.changeStatus(item,code);});}
+        for(const item of list)this.renderCard(column,item);if(!list.length)column.createEl("p",{text:this.plugin.t("Пусто"),cls:"kmp-help"});
+      }
+    }else for(const item of items)this.renderCard(board,item);
+  }
+  renderCard(container,item) {
+    const {file,fm,summary}=item,card=container.createEl("article",{cls:"kmp-media-card"});card.setAttribute("draggable",String(this.mode==="kanban"));
+    this.renderer.registerDomEvent(card,"dragstart",event=>{event.dataTransfer?.setData("application/x-media-catalog-note",file.path);if(event.dataTransfer)event.dataTransfer.effectAllowed="move";});
+    const cover=card.createDiv({cls:"kmp-media-cover"});
+    let url=validURL(fm.cover);
+    if(!url&&typeof fm.cover==="string") {const local=this.plugin.app.metadataCache?.getFirstLinkpathDest(fm.cover.replace(/^\[\[|\]\]$/g,""),file.path);if(local)url=this.plugin.app.vault.getResourcePath(local);}
+    const fallback=()=>{cover.empty();cover.createEl("span",{text:this.plugin.t("Обложка недоступна")});};
+    if(url){const image=cover.createEl("img",{attr:{src:url,alt:String(fm.title||file.basename),loading:"lazy"}});image.setAttribute("draggable","false");this.renderer.registerDomEvent(image,"error",fallback);}else fallback();
+    const title=card.createEl("button",{text:String(fm.title||file.basename),cls:"kmp-card-title"});this.renderer.registerDomEvent(title,"click",()=>this.plugin.app.workspace.getLeaf(false).openFile(file));
+    const creator=fm.author||fm.director;card.createEl("p",{text:[Array.isArray(creator)?creator.join(", "):creator,fm.year].filter(Boolean).join(" · "),cls:"kmp-card-meta"});
+    card.createEl("p",{text:summary||this.plugin.t("Нет описания"),cls:"kmp-card-summary"});
+    const label=card.createEl("label",{text:this.plugin.t("Статус")}),select=label.createEl("select");select.setAttribute("aria-label",this.plugin.t("Статус")+": "+String(fm.title||file.basename));
+    const current=statusCode(fm.status);if(current==="other")select.createEl("option",{text:typeof fm.status==="string"?fm.status:this.plugin.t("Без статуса"),attr:{value:"other"}});
+    for(const code of STATUS_CODES)select.createEl("option",{text:statusLabel(this.kind,code,this.plugin.locale),attr:{value:code}});select.value=current;
+    this.renderer.registerDomEvent(select,"change",async()=>{const code=select.value;select.disabled=true;try{await this.changeStatus(item,code);}finally{select.disabled=false;}});
+  }
+  async changeStatus(item,code) {try{await this.plugin.enqueueAdd(()=>this.plugin.changeStatus(item.file,code,item.fm.status));if(!this.closed)await this.refresh();}catch(e){new Notice(this.plugin.t(e.message));if(!this.closed)await this.refresh();}}
   onunload() {this.closed=true;++this.serial;this.plugin.widgets.delete(this);this.element.empty();}
 }
 class CatalogView extends ItemView {
-  constructor(leaf,plugin) {super(leaf);this.plugin=plugin;this.kind="film";}
+  constructor(leaf,plugin) {super(leaf);this.plugin=plugin;this.kind="film";this.mode="cards";}
   getViewType() {return VIEW;}
-  getDisplayText() {return "Кино и книги";}
+  getDisplayText() {return this.plugin.t("Кино и книги");}
   getIcon() {return "library";}
-  getState() {return {kind:this.kind};}
-  async setState(state,result) {this.kind=state?.kind==="book"?"book":"film";await this.render();await super.setState(state,result);}
+  getState() {return {kind:this.kind,mode:this.widget?.mode||this.mode};}
+  async setState(state,result) {this.kind=state?.kind==="book"?"book":"film";this.mode=["cards","table","kanban"].includes(state?.mode)?state.mode:this.mode;await this.render();await super.setState(state,result);}
   async onOpen() {await this.render();}
   async render() {
     if(this.widget){this.removeChild(this.widget);this.widget=null;}
     const c=this.contentEl;c.empty();c.addClass("kmp-library");
     const tabs=c.createDiv({cls:"kmp-tabs"});
-    for(const [kind,label] of [["film","Кино"],["book","Книги"]]) {
+    for(const [kind,label] of [["film",this.plugin.t("Кино")],["book",this.plugin.t("Книги")]]) {
       const b=tabs.createEl("button",{text:label});b.setAttribute("aria-pressed",String(this.kind===kind));
       b.addEventListener("click",async()=>{this.kind=kind;await this.render();this.app.workspace.requestSaveLayout();});
     }
-    this.widget=this.addChild(new CatalogWidget(this.plugin,c.createDiv(),this.kind));
+    this.widget=this.addChild(new CatalogWidget(this.plugin,c.createDiv(),this.kind,"",this.mode));this.widget.onModeChange=mode=>{this.mode=mode;this.app.workspace.requestSaveLayout();};
   }
   async onClose() {if(this.widget){this.removeChild(this.widget);this.widget=null;}this.contentEl.empty();}
 }
 class PickerSettings extends PluginSettingTab {
   display() {
-    const c=this.containerEl;c.empty();new Setting(c).setName("Источники").setHeading();
-    c.createEl("p",{text:"Ключи сохраняются в локальном хранилище этого устройства, вне файлов Vault. На Mac и телефоне настройте их отдельно. Книги можно искать в Open Library без ключа."});
-    for(const [key,label,description] of [["tmdb","TMDB Read Access Token","Для поиска фильмов. API Read Access Token из настроек TMDB."],["google","Google Books API key","Дополнительный источник книг. Можно оставить пустым."]]) {
-      new Setting(c).setName(label).setDesc(description).addText(t=>{t.inputEl.type="password";t.setValue(this.plugin.key(key));t.onChange(v=>{try{this.plugin.setKey(key,v);}catch{new Notice("Локальное хранилище ключей недоступно.");}});});
+    const c=this.containerEl;c.empty();new Setting(c).setName(this.plugin.t("Источники")).setHeading();
+    new Setting(c).setName(this.plugin.t("Язык интерфейса")).setDesc(this.plugin.t("Язык интерфейса и язык данных настраиваются отдельно. Перезапустите плагин после смены языка интерфейса.")).addDropdown(d=>d.addOption("auto",this.plugin.t("Автоматически")).addOption("ru","Русский").addOption("en","English").setValue(this.plugin.options.uiLanguage).onChange(async value=>{try{await this.plugin.enqueueAdd(async()=>{const next={...this.plugin.options,uiLanguage:value};await this.plugin.saveData(next);this.plugin.options=next;});}catch{new Notice(this.plugin.t("Не удалось сохранить настройки."));}}));
+    new Setting(c).setName(this.plugin.t("Язык метаданных фильмов")).setDesc(this.plugin.t("Код языка, например ru-RU, en-US или de-DE. Язык издания книги берётся из источника и не переводится.")).addText(t=>{t.setValue(this.plugin.options.metadataLocale);t.inputEl.addEventListener("change",async()=>{const value=t.inputEl.value.trim();if(!/^[a-z]{2,3}-[A-Z]{2}$/.test(value)){new Notice(this.plugin.t("Неверный код языка."));return;}try{await this.plugin.enqueueAdd(async()=>{const next={...this.plugin.options,metadataLocale:value};await this.plugin.saveData(next);this.plugin.options=next;});}catch{new Notice(this.plugin.t("Не удалось сохранить настройки."));}});});
+    c.createEl("p",{text:this.plugin.t("Ключи сохраняются в локальном хранилище этого устройства, вне файлов Vault. На Mac и телефоне настройте их отдельно. Книги можно искать в Open Library без ключа.")});
+    for(const [key,label,description] of [["tmdb","TMDB Read Access Token",this.plugin.t("Для поиска фильмов. API Read Access Token из настроек TMDB.")],["google","Google Books API key",this.plugin.t("Дополнительный источник книг. Можно оставить пустым.")]]) {
+      new Setting(c).setName(label).setDesc(description).addText(t=>{t.inputEl.type="password";t.setValue(this.plugin.key(key));t.onChange(v=>{try{this.plugin.setKey(key,v);}catch{new Notice(this.plugin.t("Локальное хранилище ключей недоступно."));}});});
     }
-    c.createEl("p",{text:"Другие плагины Obsidian имеют доступ к среде приложения и локальному хранилищу. Ключи не записываются в data.json и не синхронизируются этим плагином."});
-    new Setting(c).setName("Каталоги").setHeading();
-    for(const [kind,label] of [["film","Кино"],["book","Книги"]]) {
-      for(const [group,name,suffix] of [["folders","Папка карточек",""],["bases","Файл базы",".base"]]) {
-        new Setting(c).setName(label+": "+name).setDesc("Путь внутри хранилища сохраняется после выхода из поля. Существующие файлы автоматически не перемещаются.").addText(t=>{t.setValue(this.plugin[group][kind]);t.inputEl.addEventListener("change",async()=>{try{const path=catalogPath(t.inputEl.value,suffix);await this.plugin.enqueueAdd(async()=>{const next={...this.plugin.options,[group]:{...this.plugin[group],[kind]:path}};await this.plugin.saveData(next);this.plugin.options=next;});}catch(e){new Notice(e.message);}});});
+    c.createEl("p",{text:this.plugin.t("Другие плагины Obsidian имеют доступ к среде приложения и локальному хранилищу. Ключи не записываются в data.json и не синхронизируются этим плагином.")});
+    new Setting(c).setName(this.plugin.t("Каталоги")).setHeading();
+    for(const [kind,label] of [["film",this.plugin.t("Кино")],["book",this.plugin.t("Книги")]]) {
+      for(const [group,name,suffix] of [["folders",this.plugin.t("Папка карточек"),""],["bases",this.plugin.t("Файл базы"),".base"]]) {
+        new Setting(c).setName(label+": "+name).setDesc(this.plugin.t("Путь внутри хранилища сохраняется после выхода из поля. Существующие файлы автоматически не перемещаются.")).addText(t=>{t.setValue(this.plugin[group][kind]);t.inputEl.addEventListener("change",async()=>{try{const path=catalogPath(t.inputEl.value,suffix);await this.plugin.enqueueAdd(async()=>{const next={...this.plugin.options,[group]:{...this.plugin[group],[kind]:path}};await this.plugin.saveData(next);this.plugin.options=next;});}catch(e){new Notice(e.message);}});});
       }
     }
-    new Setting(c).setName("Открыть библиотеку").addButton(b=>b.setButtonText("Кино и книги").onClick(()=>this.plugin.openCatalog()));
-    c.createEl("p",{text:"Сначала укажите папки и файлы базы. Новые Bases создаются только по кнопке в каталоге. При изменении путей закройте и снова откройте библиотеку."});
-    new Setting(c).setName("Использование данных").setHeading();
-    c.createEl("p",{text:"Поиск отправляет введённое название и выбранный ID в TMDB, Open Library и, если указан ключ, Google Books. Текст заметок, отзывы и хайлайты не отправляются. Телеметрии нет."});
-    c.createEl("p",{text:"This product uses the TMDB API but is not endorsed or certified by TMDB. Данные фильмов и изображения предоставлены TMDB; каждая карточка содержит ссылку на источник."});
+    new Setting(c).setName(this.plugin.t("Открыть библиотеку")).addButton(b=>b.setButtonText(this.plugin.t("Кино и книги")).onClick(()=>this.plugin.openCatalog()));
+    c.createEl("p",{text:this.plugin.t("Сначала укажите папки и файлы базы. Новые Bases создаются только по кнопке в каталоге. При изменении путей закройте и снова откройте библиотеку.")});
+    new Setting(c).setName(this.plugin.t("Использование данных")).setHeading();
+    c.createEl("p",{text:this.plugin.t("Поиск отправляет введённое название и выбранный ID в TMDB, Open Library и, если указан ключ, Google Books. Текст заметок, отзывы и хайлайты не отправляются. Телеметрии нет.")});
+    c.createEl("p",{text:this.plugin.t("This product uses the TMDB API but is not endorsed or certified by TMDB. Данные фильмов и изображения предоставлены TMDB; каждая карточка содержит ссылку на источник.")});
     c.createEl("a",{text:"The Movie Database (TMDB)",attr:{href:"https://www.themoviedb.org/",target:"_blank",rel:"noopener noreferrer"}});
   }
 }
 class MediaPicker extends Plugin {
+  async storedStatus(kind,code) {const base=this.app.vault.getAbstractFileByPath(this.bases[kind]);if(base?.extension==="base"){try{if(usesLegacyStatuses(parseYaml(await this.app.vault.read(base))))return statusLabel(kind,code,"ru").toLowerCase();}catch{}}return code;}
+  get locale() {const language=this.options?.uiLanguage||"auto";return (language==="auto"?(typeof getLanguage==="function"?getLanguage():"en"):language).startsWith("ru")?"ru":"en";}
+  t(message) {if(this.locale==="ru")return message;for(const prefix of ["Open Library: ","Google Books: "])if(typeof message==="string"&&message.startsWith(prefix))return prefix+translate(message.slice(prefix.length),"en");return translate(message,"en");}
+  async changeStatus(file,code,expected) {
+    if(!STATUS_CODES.includes(code))throw new Error(this.t("Не удалось изменить статус."));
+    const raw=await this.app.vault.read(file),fm=frontmatter(raw);
+    if(!["film","book"].includes(fm.type)||!file.path.startsWith(this.folders[fm.type]+"/")||JSON.stringify(fm.status)!==JSON.stringify(expected))throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));
+    if(statusCode(fm.status)===code)return;
+    const stored=await this.storedStatus(fm.type,code);
+    const folder="Media catalog backups";if(Object.values(this.folders).some(path=>folder===path||folder.startsWith(path+"/")))throw new Error(this.t("Выберите папку каталога, отличную от папки резервных копий."));await ensureFolder(this.app.vault,folder);
+    let path=folder+"/"+Date.now()+" — "+safeName(file.basename)+".md",n=0;while(this.app.vault.getAbstractFileByPath(path))path=folder+"/"+Date.now()+"-"+(++n)+" — "+safeName(file.basename)+".md";
+    await this.app.vault.create(path,raw);
+    await this.app.fileManager.processFrontMatter(file,current=>{if(current.type!==fm.type||JSON.stringify(current.status)!==JSON.stringify(expected))throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));current.status=stored;});
+    this.lastStatusChange={path:file.path,file,kind:fm.type,before:expected,after:stored,backup:path};new Notice(this.t("Статус изменён."));
+  }
+  async undoStatus() {
+    const change=this.lastStatusChange;if(!change)throw new Error(this.t("Нет изменения для отмены."));const file=this.app.vault.getAbstractFileByPath(change.path);if(!file||file!==change.file)throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));
+    await this.app.fileManager.processFrontMatter(file,current=>{if(current.type!==change.kind||current.status!==change.after)throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));if(change.before===undefined)delete current.status;else current.status=change.before;});this.lastStatusChange=null;new Notice(this.t("Изменение отменено."));
+  }
   get folders() {return this.options?.folders||FOLDERS;}
   get bases() {return this.options?.bases||BASES;}
   async createCatalog(kind) {
     const path=catalogPath(this.bases[kind],".base"),folder=catalogPath(this.folders[kind]);
-    if(this.app.vault.getAbstractFileByPath(path))throw new Error("По этому пути уже есть файл или папка. Существующие файлы не изменены.");
+    if(this.app.vault.getAbstractFileByPath(path))throw new Error(this.t("По этому пути уже есть файл или папка. Существующие файлы не изменены."));
     await ensureFolder(this.app.vault,folder);
     const parent=path.split("/").slice(0,-1).join("/");if(parent)await ensureFolder(this.app.vault,parent);
-    await this.app.vault.create(path,baseText(kind,folder));new Notice("Каталог создан.");
+    await this.app.vault.create(path,baseText(kind,folder,this.locale));new Notice(this.t("Каталог создан."));
   }
   openPicker(kind) {
     const m=new PickerModal(this,kind);this.modals.add(m);const original=m.onClose.bind(m);
@@ -365,24 +451,25 @@ class MediaPicker extends Plugin {
       const haystack=titleKey([fm.title,file.basename,fm.original_title,...names].filter(Boolean).join(" "));
       if(tokens.every(t=>haystack.includes(t))&&(!filmYear||String(fm.year)===filmYear))local.push({kind,source:"vault",id:file.path,title:cleanTitle(fm.title||file.basename),author:names.filter(Boolean).join(", "),year:fm.year,publisher:fm.publisher});
     }
-    if(local.length)partial({items:local,warnings:["Ищу также во внешних источниках…"]});
+    if(local.length)partial({items:local,warnings:[this.t("Ищу также во внешних источниках…")]});
     try {const remote=await this.api.search(kind,query,filmYear);return {items:[...local,...remote.items],warnings:remote.warnings};}
     catch(e) {if(local.length)return {items:local,warnings:[e.message]};throw e;}
   }
   async onload() {
-    const data=await this.loadData();this.options={folders:{...FOLDERS},bases:{...BASES}};
-    for(const group of ["folders","bases"])for(const kind of ["film","book"])if(data?.[group]?.[kind]){try{this.options[group][kind]=catalogPath(data[group][kind],group==="bases"?".base":"");}catch{new Notice("Некорректный путь каталога: использован путь по умолчанию.");}}
-    this.addTail=Promise.resolve();this.api=new Api(k=>this.key(k));this.modals=new Set();this.widgets=new Set();
+    const data=await this.loadData();this.options={folders:{...FOLDERS},bases:{...BASES},uiLanguage:["ru","en"].includes(data?.uiLanguage)?data.uiLanguage:"auto",metadataLocale:/^[a-z]{2,3}-[A-Z]{2}$/.test(data?.metadataLocale||"")?data.metadataLocale:defaultMetadataLocale(typeof getLanguage==="function"?getLanguage():"en")};
+    if(this.locale==="en")for(const [kind,name] of [["film","Movies"],["book","Books"]])if(!this.app.vault.getAbstractFileByPath(FOLDERS[kind])&&!this.app.vault.getAbstractFileByPath(BASES[kind])){this.options.folders[kind]="Media/"+name;this.options.bases[kind]="Media/"+name+".base";}
+    for(const group of ["folders","bases"])for(const kind of ["film","book"])if(data?.[group]?.[kind]){try{this.options[group][kind]=catalogPath(data[group][kind],group==="bases"?".base":"");}catch{new Notice(this.t("Некорректный путь каталога: использован путь по умолчанию."));}}
+    this.addTail=Promise.resolve();this.api=new Api(k=>this.key(k),requestUrl,sleep,()=>Date.now(),()=>this.options.metadataLocale);this.modals=new Set();this.widgets=new Set();
     this.registerView(VIEW,leaf=>new CatalogView(leaf,this));
-    this.addCommand({id:"open-catalog",name:"Открыть кино и книги",callback:()=>this.openCatalog()});
-    this.addCommand({id:"open-books",name:"Открыть книги",callback:()=>this.openCatalog("book")});
-    this.addCommand({id:"add-film",name:"Добавить фильм",callback:()=>this.openPicker("film")});
-    this.addCommand({id:"add-book",name:"Добавить книгу",callback:()=>this.openPicker("book")});
-    this.addRibbonIcon("library","Кино и книги",()=>this.openCatalog());
-    this.registerMarkdownCodeBlockProcessor("media-catalog",(source,element,ctx)=>{const kind=source.trim();if(!["film","book"].includes(kind)){element.setText("Укажите film или book внутри блока media-catalog.");return;}ctx.addChild(new CatalogWidget(this,element,kind,ctx.sourcePath));});
+    this.addCommand({id:"open-catalog",name:this.t("Открыть кино и книги"),callback:()=>this.openCatalog()});
+    this.addCommand({id:"open-books",name:this.t("Открыть книги"),callback:()=>this.openCatalog("book")});
+    this.addCommand({id:"add-film",name:this.t("Добавить фильм"),callback:()=>this.openPicker("film")});
+    this.addCommand({id:"add-book",name:this.t("Добавить книгу"),callback:()=>this.openPicker("book")});
+    this.addRibbonIcon("library",this.t("Кино и книги"),()=>this.openCatalog());
+    this.registerMarkdownCodeBlockProcessor("media-catalog",(source,element,ctx)=>{const kind=source.trim();if(!["film","book"].includes(kind)){element.setText(this.t("Укажите film или book внутри блока media-catalog."));return;}ctx.addChild(new CatalogWidget(this,element,kind,ctx.sourcePath));});
     this.addSettingTab(new PickerSettings(this.app,this));
   }
   onunload() {for(const m of this.modals||[])m.close();for(const w of this.widgets||[])w.unload();}
 }
 module.exports=MediaPicker;
-module.exports._test={Api,SearchController,canonicalISBN,safeName,frontmatter,duplicateFiles,addCard,cardText,PickerModal,CatalogWidget,CatalogView,catalogPath,catalogFiles,baseText,FOLDERS,BASES};
+module.exports._test={Api,SearchController,canonicalISBN,safeName,frontmatter,duplicateFiles,addCard,cardText,PickerModal,CatalogWidget,CatalogView,catalogPath,catalogFiles,baseText,FOLDERS,BASES,statusCode,statusLabel,shortDescription,translate,usesLegacyStatuses};

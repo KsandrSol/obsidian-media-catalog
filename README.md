@@ -2,16 +2,26 @@
 
 A local movie and book library for Obsidian using the built-in Bases plugin. Open the library, switch between movies and books, and use Add above the embedded catalog to search by title and choose a specific movie or book edition. Cards are ordinary Markdown notes and catalogs are ordinary Base files, usable without this plugin.
 
-## Version 0.2.0
+## Version 0.3.0
 
-- One library tab with movies, books and an Add button above native Bases.
+- One library tab with explicit Cards, Table and Kanban buttons, movies/books tabs and Add above the catalog.
+- Cards show a poster or cover, title, author/director, year, synopsis and a status selector. Failed images show a readable placeholder.
+- Kanban groups items by status. Drag a card to change status on desktop, or use its selector on desktop and mobile.
+- Every status change creates a full original-note backup in Media catalog backups. Undo restores the last status change in the current plugin session, preserving later edits to other fields and the body. It refuses to undo over a later status change or a replaced note. Backups remain after restarting the app; automatic Undo does not.
+- Russian and English interface translations, automatic app-language detection with English fallback, and a separate configurable TMDB metadata locale. Book edition language is preserved from its source. Titles, existing reviews and descriptions are not machine-translated.
 - Live title search after two characters, with an optional movie year. Existing local cards appear before remote results.
 - TMDB movie lookup, Open Library book editions and optional Google Books.
 - Configurable note folders and Base paths. Create a missing catalog explicitly from the library; existing catalog files are never replaced.
 - Duplicate detection by source IDs, movie IDs and validated ISBN-10/13. Ambiguous titles require confirmation for a different edition.
 - A `media-catalog` Markdown code block adds the same catalog and button to any note.
 
-Enable the built-in Bases plugin. Run the command Открыть кино и книги (Open movies and books), or use the library icon. The interface is currently in Russian. Configure the note folders and Base files in the plugin settings before adding items. Paths are relative to the vault; changing a path does not move existing data. The defaults retain the original Areas/Личное catalog layout and can be changed for any vault.
+Enable the built-in Bases plugin for Table view. Run Open movies and books (Открыть кино и книги), or use the library icon. Set Interface language to Automatic, Русский or English. Set Movie metadata language independently, for example en-US, ru-RU or de-DE; the default follows the app language where supported. Other interface languages currently use English.
+
+Configure the note folders and Base files before adding items. Paths are relative to the vault; changing a path does not move existing data. Existing Areas/Личное catalogs are retained. New English-interface vaults default to Media/Movies and Media/Books.
+
+Cards and Kanban show movie/book notes in the configured folders; they do not evaluate custom native Base filters. Table embeds the existing native table view by its name, retaining its filters, properties and sorting. Existing Base files are not rewritten or translated. Newly created Bases have localized Cards, Table and status views. Use Open Base file to edit the original native catalog directly.
+
+The five status groups are Planned, Watching/Reading, Watched/Read, On hold and Dropped. Unknown custom statuses are kept in Other statuses. Existing Russian and English status values are recognized without bulk migration. New catalogs use stable status codes; old Russian Base filters retain compatible Russian values when adding or moving cards. Changing status changes only the status field; dates and personal ratings remain manual.
 
 To embed movies in a note:
 
@@ -21,7 +31,7 @@ film
 ```
 ````
 
-For books use `book` instead of `film`. The standard Base filters, views and sorting remain available in the embedded Base. Use Open Base file to edit the native catalog directly. The plugin does not patch the native Base toolbar.
+For books use `book` instead of `film`. The block includes the same Cards, Table and Kanban controls. The plugin does not patch the native Base toolbar.
 
 ## Installation and update
 
@@ -39,7 +49,7 @@ This product uses the TMDB API but is not endorsed or certified by TMDB. Movie m
 
 ## Data preservation and limits
 
-Existing cards and Base files are never overwritten by this version. Adding a duplicate opens the existing card. Creating a missing catalog only creates a new Base file and missing folders. The plugin does not refresh metadata, edit personal fields, import Kindle clippings or perform rollback of note edits yet. The separate server catalog tool remains responsible for those workflows. Kindle and safe metadata refresh are planned for a later release.
+Adding a duplicate opens the existing card. Existing Base files are never overwritten. Creating a missing catalog only creates a new Base file and missing folders. A status change is an explicit user action, backed up before FileManager.processFrontMatter updates that field. Reviews, highlights, custom properties and other personal fields are retained. No metadata refresh or Kindle clipping import is included yet; the separate server tool remains responsible for those workflows.
 
 Unit tests use a DOM/API test double, including browser-like native timer receiver checks. Desktop and mobile native Base rendering and real authenticated provider calls must be checked in Obsidian before submission. A development package is not evidence of acceptance by the community directory.
 
