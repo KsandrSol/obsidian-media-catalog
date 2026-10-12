@@ -1,6 +1,6 @@
 {
   "name": "ksandr-media-picker",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Movie and book catalogs using native Bases",
   "license": "MIT",

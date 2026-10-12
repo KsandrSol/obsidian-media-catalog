@@ -73,7 +73,7 @@ function errorText(status) {
 }
 class Api {
   constructor(keys, transport=requestUrl, delay=sleep, now=()=>Date.now(), metadataLocale=()=>"ru-RU") {
-    this.keys=keys; this.transport=transport; this.delay=delay; this.now=now; this.metadataLocale=metadataLocale;this.olTail=Promise.resolve(); this.lastOL=-Infinity;
+    this.keys=keys; this.transport=transport; this.delay=delay; this.now=now; this.metadataLocale=metadataLocale;this.olTail=Promise.resolve(); this.lastOL=-Infinity;this.wikiTail=Promise.resolve();this.lastWiki=-Infinity;this.cache=new Map();
   }
   async json(url, headers={}) {
     let r, timer;
@@ -102,7 +102,30 @@ class Api {
     const key=text(this.keys("google")); if(!key) throw new Error("Для Google Books требуется ключ API.");
     return this.json("https://www.googleapis.com/books/v1/"+path+"?"+new URLSearchParams({...params,key}));
   }
-  async search(kind, query, filmYear="") {
+  async wiki(params) {
+    const job=this.wikiTail.then(async()=>{const wait=this.lastWiki+1050-this.now();if(wait>0)await this.delay(wait);try{const data=await this.json("https://www.wikidata.org/w/api.php?"+new URLSearchParams({format:"json",...params}));if(data.error)throw new Error("Источник временно недоступен.");return data;}finally{this.lastWiki=this.now();}});this.wikiTail=job.catch(()=>{});return job;
+  }
+  async entities(ids,props="labels|descriptions|claims") {if(!ids.length)return {};return (await this.wiki({action:"wbgetentities",ids:ids.join("|"),props,languages:this.metadataLocale().split("-")[0]+"|en",languagefallback:"1"})).entities||{};}
+  wikiLabel(entity,field="labels") {const values=entity?.[field]||{};return text(values[this.metadataLocale().split("-")[0]]?.value||values.en?.value||Object.values(values)[0]?.value);}
+  claims(entity,property) {return arr(entity?.claims?.[property]).filter(c=>c.rank!=="deprecated"&&c.mainsnak?.snaktype==="value").map(c=>c.mainsnak.datavalue?.value).filter(v=>v!=null);}
+  isFilm(entity) {return this.claims(entity,"P31").some(v=>["Q11424","Q24869","Q506240","Q202866","Q226730"].includes(v.id));}
+  async wikiSearch(query,filmYear) {
+    const found=await this.wiki({action:"wbsearchentities",search:query,language:this.metadataLocale().split("-")[0],uselang:this.metadataLocale().split("-")[0],type:"item",limit:"20"});
+    const ids=arr(found.search).map(i=>i.id).filter(id=>/^Q\d+$/.test(id)),entities=await this.entities(ids);
+    return {items:ids.map(id=>entities[id]).filter(e=>e&&this.isFilm(e)).map(e=>({kind:"film",source:"wikidata",id:e.id,title:this.wikiLabel(e),author:this.wikiLabel(e,"descriptions"),year:year(this.claims(e,"P577")[0]?.time)})).filter(i=>i.title&&(!filmYear||String(i.year)===filmYear)),warnings:[]};
+  }
+  async search(kind,query,filmYear="",provider="auto") {
+    if(kind==="film"&&filmYear&&!/^\d{4}$/.test(filmYear))throw new Error("Год фильма: четыре цифры или пустое поле.");
+    const available=kind==="film"?[...(this.keys("tmdb")?["tmdb"]:[]),"wikidata"]:[...(this.keys("google")?["google"]:[]),"openlibrary"];
+    const chosen=provider==="auto"?available:[provider];
+    if(chosen.some(name=>!available.includes(name)))throw new Error("Для выбранного источника требуется ключ API.");
+    const signature=JSON.stringify([kind,query,filmYear,chosen,this.metadataLocale()]),cached=this.cache.get(signature);if(cached&&this.now()-cached.at<300000)return cached.result;
+    const items=[],warnings=[];
+    for(const source of chosen){try{const result=await this.searchDirect(kind,query,filmYear,source);items.push(...result.items);warnings.push(...result.warnings);}catch(e){warnings.push(source+": "+e.message);}}
+    const result={items,warnings};if(!warnings.length){if(this.cache.size>=100)this.cache.delete(this.cache.keys().next().value);this.cache.set(signature,{at:this.now(),result});}return result;
+  }
+  async searchDirect(kind, query, filmYear="",provider="auto") {
+    if(provider==="wikidata")return this.wikiSearch(query,filmYear);
     if(kind==="film") {
       const params={query,language:this.metadataLocale(),include_adult:"false"};
       if(filmYear) { if(!/^\d{4}$/.test(filmYear)) throw new Error("Год фильма: четыре цифры или пустое поле."); params.primary_release_year=filmYear; }
@@ -110,7 +133,7 @@ class Api {
       return {items:arr(data.results).filter(m=>Number.isInteger(m.id)&&text(m.title||m.original_title)).slice(0,12).map(m=>({kind,source:"tmdb",id:String(m.id),title:cleanTitle(m.title||m.original_title),author:cleanTitle(m.original_title),year:year(m.release_date)})),warnings:[]};
     }
     const items=[], warnings=[]; const isbn=canonicalISBN(query);
-    const searches=[(async()=>{
+    const searches=[];if(provider!=="google")searches.push((async()=>{
       try {
         const data=await this.ol("search.json",{q:isbn?"isbn:"+isbn:query,limit:"8",fields:"key,title,author_name,first_publish_year,editions,editions.key,editions.title,editions.publish_date,editions.publisher,editions.language,editions.isbn", "editions.limit":"3"});
         for(const work of arr(data.docs)) {
@@ -121,8 +144,8 @@ class Api {
           }
         }
       } catch(e) { warnings.push("Open Library: "+e.message); }
-    })()];
-    if(this.keys("google")) searches.push((async()=>{
+    })());
+    if(provider!=="openlibrary"&&this.keys("google")) searches.push((async()=>{
       try {
         const d=await this.google("volumes",{q:isbn?"isbn:"+isbn:query,maxResults:"8",printType:"books"});
         for(const v of arr(d.items)) { const i=v.volumeInfo||{}; if(!/^[\w-]+$/.test(text(v.id))||!text(i.title)) continue;
@@ -134,6 +157,13 @@ class Api {
   }
   async details(item) {
     const ratings=[], at=isoDate();
+    if(item.source==="wikidata") {
+      if(!/^Q\d+$/.test(item.id))throw new Error("Некорректный идентификатор фильма.");
+      const entity=(await this.entities([item.id]))[item.id];if(!entity||!this.isFilm(entity))throw new Error("Источник вернул другой фильм.");
+      const ids=[...this.claims(entity,"P57"),...this.claims(entity,"P136"),...this.claims(entity,"P495")].map(v=>v.id).filter(id=>/^Q\d+$/.test(id||""));const related=await this.entities([...new Set(ids)].slice(0,40),"labels");
+      const labels=property=>this.claims(entity,property).map(v=>this.wikiLabel(related[v.id])).filter(Boolean),src="https://www.wikidata.org/wiki/"+item.id;
+      return {kind:"film",source:"wikidata",source_id:item.id,description:this.wikiLabel(entity,"descriptions"),fields:{title:this.wikiLabel(entity),year:year(this.claims(entity,"P577")[0]?.time),director:labels("P57"),genre:labels("P136"),country:labels("P495"),wikidata_id:item.id,imdb_id:text(this.claims(entity,"P345")[0])||null,tmdb_id:text(this.claims(entity,"P4947")[0])||null,source_url:src,external_ratings:[]}};
+    }
     if(item.source==="tmdb") {
       if(!/^\d+$/.test(item.id)) throw new Error("Некорректный идентификатор фильма.");
       const m=await this.tmdb("movie/"+item.id,{language:this.metadataLocale(),append_to_response:"credits,external_ids"});
@@ -217,6 +247,64 @@ async function addCard(app,rec,allowSeparate=false,folders=FOLDERS,locale="ru",i
   if(app.vault.getAbstractFileByPath(path))throw new Error("Файл уже существует. Откройте его и проверьте издание.");
   const file=await app.vault.create(path,cardText(rec,locale,initialStatus)); return {created:file};
 }
+
+function providerSelect(plugin,container,kind,value,onChange) {
+  const label=container.createEl("label",{text:plugin.t("Источник поиска")}),select=label.createEl("select");select.setAttribute("aria-label",plugin.t("Источник поиска"));
+  for(const [id,name] of (kind==="film"?[["auto",plugin.t("Автоматически — API в приоритете")],["wikidata","Wikidata"],["tmdb","TMDB"]]:[["auto",plugin.t("Автоматически — API в приоритете")],["openlibrary","Open Library"],["google","Google Books"]]))select.createEl("option",{text:name,attr:{value:id}});
+  select.value=value;select.addEventListener("change",()=>onChange(select.value));return select;
+}
+function strictFrontmatter(raw) {
+  const match=String(raw).match(/^\ufeff?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if(!match){if(/^\ufeff?---(?:\r?\n|$)/.test(raw))throw new Error("Некорректный YAML: заметка пропущена.");return {values:{},body:raw};}
+  const values=parseYaml(match[1])??{};if(typeof values!=="object"||Array.isArray(values))throw new Error("Некорректный YAML: заметка пропущена.");return {values,body:raw.slice(match[0].length)};
+}
+const emptyValue=value=>value==null||typeof value==="string"&&!value.trim()||Array.isArray(value)&&!value.length;
+function metadataPatch(raw,rec) {
+  const {values}=strictFrontmatter(raw);if(!emptyValue(values.type)&&values.type!==rec.kind)throw new Error("Тип заметки не совпадает.");
+  const patch={},allowed=["title","original_title","director","author","year","runtime","genre","country","tmdb_id","imdb_id","wikidata_id","cover","cover_source","source_url","external_ratings","publisher","pages","language","isbn","first_published"];
+  for(const key of allowed)if(emptyValue(values[key])&&!emptyValue(rec.fields[key]))patch[key]=rec.fields[key];
+  if(emptyValue(values.type))patch.type=rec.kind;
+  if(emptyValue(values.source)&&emptyValue(values.source_id)){patch.source=rec.source;patch.source_id=rec.source_id;}
+  if(emptyValue(values.summary)&&rec.description)patch.summary=cleanTitle(rec.description.replace(/\s+/g," ")).slice(0,280);
+  return patch;
+}
+async function scanNotes(plugin,folder,kind,recursive=true) {
+  folder=catalogPath(folder);const root=plugin.app.vault.getAbstractFileByPath(folder);if(!Array.isArray(root?.children))throw new Error("Папка не найдена.");
+  if(folder==="Media catalog backups"||folder.startsWith("Media catalog backups/"))throw new Error("Папка резервных копий исключена из сканирования.");
+  const rows=[],warnings=[];
+  for(const file of catalogFiles(plugin.app,folder).sort((a,b)=>a.path.localeCompare(b.path))){if(file.path.startsWith("Media catalog backups/")||!recursive&&file.path.slice(folder.length+1).includes("/"))continue;
+    try{const raw=await plugin.app.vault.read(file),{values}=strictFrontmatter(raw);if(!emptyValue(values.type)&&values.type!==kind)continue;
+      const title=cleanTitle(values.title||file.basename),release=kind==="film"?year(values.year)||year(file.basename):null,ids=[...isbnSet(values.isbn)],author=arr(values.author).join(" ")||text(values.author);
+      const query=kind==="book"&&ids.length?ids[0]:kind==="book"?[title,author].filter(Boolean).join(" "):title.replace(/\s*\((?:19|20)\d{2}\)\s*$/,"");
+      rows.push({file,raw,query,year:release?String(release):""});
+    }catch{warnings.push(file.path+": "+plugin.t("Некорректный YAML: заметка пропущена."));}
+  }return {rows,warnings};
+}
+class ScanModal extends Modal {
+  constructor(plugin,kind){super(plugin.app);this.plugin=plugin;this.kind=kind;this.closed=false;this.serial=0;this.index=0;this.rows=[];this.provider=plugin.options.providers[kind];}
+  onOpen(){const c=this.contentEl;c.addClass("ksandr-media-picker");c.createEl("h2",{text:this.plugin.t("Сканировать папку")});c.createEl("p",{text:this.plugin.t("Поиск отправляет только название, автора, год или ISBN. Сохранение заполняет пустые поля после выбора; текст и личные поля сохраняются.")});
+    const label=c.createEl("label",{text:this.plugin.t("Папка карточек")});this.folder=label.createEl("input");this.folder.value=this.plugin.folders[this.kind];this.folder.setAttribute("aria-label",this.plugin.t("Папка карточек"));
+    const sub=c.createEl("label",{text:this.plugin.t("Включать подпапки")});this.recursive=sub.createEl("input",{attr:{type:"checkbox"}});this.recursive.checked=true;
+    this.source=providerSelect(this.plugin,c,this.kind,this.provider,value=>{this.provider=value;if(this.rows.length&&!this.busy)this.showCurrent();});
+    const start=c.createEl("button",{text:this.plugin.t("Собрать очередь"),cls:"mod-cta"});start.addEventListener("click",async()=>{if(this.busy)return;const seq=++this.serial;this.busy=true;start.disabled=true;try{const result=await scanNotes(this.plugin,this.folder.value,this.kind,this.recursive.checked);if(this.closed||seq!==this.serial)return;this.rows=result.rows;this.index=0;this.work.empty();for(const message of result.warnings)this.work.createEl("p",{text:message});if(!this.queue)this.queue=c.createDiv();await this.showCurrent();}catch(e){if(!this.closed)this.work.setText(this.plugin.t(e.message));}finally{this.busy=false;start.disabled=false;}});
+    this.work=c.createDiv();this.undo=c.createEl("button",{text:this.plugin.t("Отменить последнее заполнение")});this.undo.disabled=!this.plugin.lastMetadataChange;this.undo.addEventListener("click",async()=>{if(this.busy)return;this.busy=true;this.undo.disabled=true;try{await this.plugin.enqueueAdd(()=>this.plugin.undoMetadata());}catch(e){new Notice(this.plugin.t(e.message));}finally{this.busy=false;this.undo.disabled=!this.plugin.lastMetadataChange;}});
+  }
+  async showCurrent(){const seq=++this.serial;if(this.closed)return;if(this.stage){this.removeChild(this.stage);this.stage=null;}this.stage=this.addChild(new Component());const c=this.queue||this.work;c.empty();const row=this.rows[this.index];if(!row){c.createEl("p",{text:this.plugin.t("Очередь завершена.")});return;}
+    c.createEl("h3",{text:(this.index+1)+" / "+this.rows.length+" · "+row.file.path});const open=c.createEl("button",{text:this.plugin.t("Открыть заметку")});this.stage.registerDomEvent(open,"click",()=>this.app.workspace.getLeaf("tab").openFile(row.file));
+    const query=c.createEl("input");query.value=row.query;query.setAttribute("aria-label",this.plugin.t("Название"));const y=c.createEl("input");y.value=row.year;y.setAttribute("aria-label",this.plugin.t("Год"));if(this.kind!=="film")y.hidden=true;
+    const find=c.createEl("button",{text:this.plugin.t("Найти варианты")}),skip=c.createEl("button",{text:this.plugin.t("Пропустить")});this.stage.registerDomEvent(skip,"click",()=>{if(this.busy)return;this.index++;this.showCurrent();});
+    const result=c.createDiv(),preview=c.createDiv();let request=0;
+    const search=async()=>{const ticket=++request;preview.empty();result.setText(this.plugin.t("Ищу…"));try{const found=await this.plugin.api.search(this.kind,query.value,y.value.trim(),this.provider);if(this.closed||seq!==this.serial||ticket!==request)return;result.empty();for(const warning of found.warnings)result.createEl("p",{text:this.plugin.t(warning)});if(!found.items.length)result.createEl("p",{text:this.plugin.t("Ничего не найдено. Попробуйте название с автором или другой язык.")});
+      for(const item of found.items){const b=result.createEl("button",{text:[item.title,item.author,item.year,item.source].filter(Boolean).join(" · "),cls:"kmp-result"});this.stage.registerDomEvent(b,"click",async()=>{const selection=++request;preview.setText(this.plugin.t("Загружаю выбранное издание…"));try{const rec=await this.plugin.api.details(item);if(this.closed||seq!==this.serial||selection!==request)return;const raw=await this.app.vault.read(row.file),patch=metadataPatch(raw,rec);preview.empty();preview.createEl("h4",{text:rec.fields.title});if(validURL(rec.fields.cover))preview.createEl("img",{cls:"kmp-cover",attr:{src:rec.fields.cover,alt:rec.fields.title,loading:"lazy"}});preview.createEl("p",{text:rec.description||this.plugin.t("Нет описания")});preview.createEl("p",{text:this.plugin.t("Будут заполнены только пустые поля:")});for(const [key,value] of Object.entries(patch))preview.createEl("p",{text:key+": "+(Array.isArray(value)?value.join(", "):value)});
+        if(!Object.keys(patch).length){preview.createEl("p",{text:this.plugin.t("Нет пустых полей для заполнения.")});return;}
+        const save=preview.createEl("button",{text:this.plugin.t("Заполнить пустые поля"),cls:"mod-cta"});this.stage.registerDomEvent(save,"click",async()=>{if(this.busy||this.closed||seq!==this.serial||selection!==request)return;this.busy=true;save.disabled=true;try{await this.plugin.enqueueAdd(()=>this.plugin.mergeMetadata(row.file,rec,raw));this.undo.disabled=false;if(!this.closed){this.index++;await this.showCurrent();}}catch(e){if(!this.closed)preview.createEl("p",{text:this.plugin.t(e.message)});}finally{this.busy=false;save.disabled=false;}});
+      }catch(e){if(!this.closed&&seq===this.serial&&selection===request)preview.setText(this.plugin.t(e.message));}});}
+    }catch(e){if(!this.closed&&seq===this.serial&&ticket===request)result.setText(this.plugin.t(e.message));}};
+    this.stage.registerDomEvent(find,"click",search);this.stage.registerDomEvent(query,"input",()=>{++request;preview.empty();});this.stage.registerDomEvent(y,"input",()=>{++request;preview.empty();});await search();
+  }
+  onClose(){this.closed=true;++this.serial;if(this.stage)this.removeChild(this.stage);this.contentEl.empty();}
+}
+
 class PickerModal extends Modal {
   constructor(plugin,kind) { super(plugin.app);this.plugin=plugin;this.kind=kind;this.seq=0;this.closed=true;this.busy=false;this.allowSeparate=false; }
   onOpen() {
@@ -227,9 +315,10 @@ class PickerModal extends Modal {
     if(this.kind==="film") {this.yearInput=c.createEl("input",{type:"text",placeholder:this.plugin.t("Год — необязательно")});this.yearInput.setAttribute("inputmode","numeric");this.yearInput.setAttribute("aria-label",this.plugin.t("Год выпуска"));}
     this.status=c.createEl("p",{text:this.plugin.t("Введите хотя бы два символа.")});this.status.setAttribute("role","status");this.status.setAttribute("aria-live","polite");
     this.results=c.createDiv({cls:"kmp-results"});this.preview=c.createDiv({cls:"kmp-preview"});
-    this.controller=new SearchController((q,y,partial)=>this.plugin.search?this.plugin.search(this.kind,q,y,partial):this.plugin.api.search(this.kind,q,y),state=>this.render(state));
+    this.controller=new SearchController((q,y,partial)=>this.plugin.search?this.plugin.search(this.kind,q,y,partial,this.providerValue||this.plugin.options.providers[this.kind]):this.plugin.api.search(this.kind,q,y),state=>this.render(state));
     const change=()=>{++this.seq;this.record=null;this.allowSeparate=false;this.preview.empty();this.controller.input(this.query.value,this.yearInput?.value.trim()||"");};
     this.query.addEventListener("input",change);this.yearInput?.addEventListener("input",change);
+    this.provider=providerSelect(this.plugin,c,this.kind,this.plugin.options.providers[this.kind],value=>{this.providerValue=value;change();});
     this.query.focus();
   }
   render(state) {
@@ -295,6 +384,7 @@ class CatalogWidget extends MarkdownRenderChild {
     bar.createEl("h3",{text:this.kind==="film"?this.plugin.t("Кино"):this.plugin.t("Книги")});
     const add=bar.createEl("button",{text:this.kind==="film"?this.plugin.t("＋ Добавить фильм"):this.plugin.t("＋ Добавить книгу"),cls:"mod-cta"});
     this.renderer.registerDomEvent(add,"click",()=>this.plugin.openPicker(this.kind));
+    const scan=bar.createEl("button",{text:this.plugin.t("Сканировать папку")});this.renderer.registerDomEvent(scan,"click",()=>this.plugin.openScanner(this.kind));
     const controls=c.createDiv({cls:"kmp-layouts"});controls.setAttribute("aria-label",this.plugin.t("Представления"));
     for(const [mode,label] of [["cards",this.plugin.t("Карточки")],["table",this.plugin.t("Таблица")],["kanban",this.plugin.t("Канбан")]]) {
       const button=controls.createEl("button",{text:this.plugin.t(label)});button.setAttribute("aria-pressed",String(this.mode===mode));
@@ -341,14 +431,17 @@ class CatalogWidget extends MarkdownRenderChild {
   renderCard(container,item) {
     const {file,fm,summary}=item,card=container.createEl("article",{cls:"kmp-media-card"});card.setAttribute("draggable",String(this.mode==="kanban"));
     this.renderer.registerDomEvent(card,"dragstart",event=>{event.dataTransfer?.setData("application/x-media-catalog-note",file.path);if(event.dataTransfer)event.dataTransfer.effectAllowed="move";});
-    const cover=card.createDiv({cls:"kmp-media-cover"});
+    const openNote=async()=>{try{await this.plugin.app.workspace.getLeaf("tab").openFile(file);}catch{new Notice(this.plugin.t("Не удалось открыть заметку."));}};
+    const cover=card.createEl("button",{cls:"kmp-media-cover",attr:{type:"button","aria-label":this.plugin.t("Открыть заметку")+": "+String(fm.title||file.basename)}});
+    this.renderer.registerDomEvent(cover,"click",openNote);
     let url=validURL(fm.cover);
     if(!url&&typeof fm.cover==="string") {const local=this.plugin.app.metadataCache?.getFirstLinkpathDest(fm.cover.replace(/^\[\[|\]\]$/g,""),file.path);if(local)url=this.plugin.app.vault.getResourcePath(local);}
     const fallback=()=>{cover.empty();cover.createEl("span",{text:this.plugin.t("Обложка недоступна")});};
     if(url){const image=cover.createEl("img",{attr:{src:url,alt:String(fm.title||file.basename),loading:"lazy"}});image.setAttribute("draggable","false");this.renderer.registerDomEvent(image,"error",fallback);}else fallback();
-    const title=card.createEl("button",{text:String(fm.title||file.basename),cls:"kmp-card-title"});this.renderer.registerDomEvent(title,"click",()=>this.plugin.app.workspace.getLeaf(false).openFile(file));
+    const title=card.createEl("button",{text:String(fm.title||file.basename),cls:"kmp-card-title"});this.renderer.registerDomEvent(title,"click",openNote);
     const creator=fm.author||fm.director;card.createEl("p",{text:[Array.isArray(creator)?creator.join(", "):creator,fm.year].filter(Boolean).join(" · "),cls:"kmp-card-meta"});
     card.createEl("p",{text:summary||this.plugin.t("Нет описания"),cls:"kmp-card-summary"});
+    const open=card.createEl("button",{text:this.plugin.t("Открыть заметку"),cls:"kmp-card-open",attr:{type:"button"}});this.renderer.registerDomEvent(open,"click",openNote);
     const label=card.createEl("label",{text:this.plugin.t("Статус")}),select=label.createEl("select");select.setAttribute("aria-label",this.plugin.t("Статус")+": "+String(fm.title||file.basename));
     const current=statusCode(fm.status);if(current==="other")select.createEl("option",{text:typeof fm.status==="string"?fm.status:this.plugin.t("Без статуса"),attr:{value:"other"}});
     for(const code of STATUS_CODES)select.createEl("option",{text:statusLabel(this.kind,code,this.plugin.locale),attr:{value:code}});select.value=current;
@@ -386,6 +479,8 @@ class PickerSettings extends PluginSettingTab {
     for(const [key,label,description] of [["tmdb","TMDB Read Access Token",this.plugin.t("Для поиска фильмов. API Read Access Token из настроек TMDB.")],["google","Google Books API key",this.plugin.t("Дополнительный источник книг. Можно оставить пустым.")]]) {
       new Setting(c).setName(label).setDesc(description).addText(t=>{t.inputEl.type="password";t.setValue(this.plugin.key(key));t.onChange(v=>{try{this.plugin.setKey(key,v);}catch{new Notice(this.plugin.t("Локальное хранилище ключей недоступно."));}});});
     }
+    for(const [kind,label] of [["film","Кино"],["book","Книги"]]){const box=c.createDiv();box.createEl("h4",{text:this.plugin.t(label)});providerSelect(this.plugin,box,kind,this.plugin.options.providers[kind],async value=>{try{await this.plugin.enqueueAdd(async()=>{const next={...this.plugin.options,providers:{...this.plugin.options.providers,[kind]:value}};await this.plugin.saveData(next);this.plugin.options=next;});}catch{new Notice(this.plugin.t("Не удалось сохранить настройки."));}});}
+    c.createEl("p",{text:this.plugin.t("Без ключей: Wikidata для кино, Open Library для книг. Автоматический режим ставит подключённые API первыми; при ошибке использует открытый источник.")});
     c.createEl("p",{text:this.plugin.t("Другие плагины Obsidian имеют доступ к среде приложения и локальному хранилищу. Ключи не записываются в data.json и не синхронизируются этим плагином.")});
     new Setting(c).setName(this.plugin.t("Каталоги")).setHeading();
     for(const [kind,label] of [["film",this.plugin.t("Кино")],["book",this.plugin.t("Книги")]]) {
@@ -396,15 +491,25 @@ class PickerSettings extends PluginSettingTab {
     new Setting(c).setName(this.plugin.t("Открыть библиотеку")).addButton(b=>b.setButtonText(this.plugin.t("Кино и книги")).onClick(()=>this.plugin.openCatalog()));
     c.createEl("p",{text:this.plugin.t("Сначала укажите папки и файлы базы. Новые Bases создаются только по кнопке в каталоге. При изменении путей закройте и снова откройте библиотеку.")});
     new Setting(c).setName(this.plugin.t("Использование данных")).setHeading();
-    c.createEl("p",{text:this.plugin.t("Поиск отправляет введённое название и выбранный ID в TMDB, Open Library и, если указан ключ, Google Books. Текст заметок, отзывы и хайлайты не отправляются. Телеметрии нет.")});
+    c.createEl("p",{text:this.plugin.t("Поиск отправляет название, автора, год, ISBN и выбранный ID в выбранные источники: Wikidata, Open Library и подключённые TMDB / Google Books. Текст заметок, отзывы и хайлайты не отправляются. Телеметрии нет.")});
     c.createEl("p",{text:this.plugin.t("This product uses the TMDB API but is not endorsed or certified by TMDB. Данные фильмов и изображения предоставлены TMDB; каждая карточка содержит ссылку на источник.")});
     c.createEl("a",{text:"The Movie Database (TMDB)",attr:{href:"https://www.themoviedb.org/",target:"_blank",rel:"noopener noreferrer"}});
   }
 }
 class MediaPicker extends Plugin {
+  openScanner(kind){const modal=new ScanModal(this,kind);this.modals.add(modal);const original=modal.onClose.bind(modal);modal.onClose=()=>{original();this.modals.delete(modal);};modal.open();}
+  async backupMetadata(file,raw){const folder="Media catalog backups";await ensureFolder(this.app.vault,folder);let path=folder+"/"+Date.now()+" — metadata — "+safeName(file.basename)+".md",n=0;while(this.app.vault.getAbstractFileByPath(path))path=folder+"/"+Date.now()+"-"+(++n)+" — metadata — "+safeName(file.basename)+".md";await this.app.vault.create(path,raw);return path;}
+  async mergeMetadata(file,rec,expected){
+    if(this.app.vault.getAbstractFileByPath(file.path)!==file||file.path.startsWith("Media catalog backups/"))throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));
+    const raw=await this.app.vault.read(file);if(raw!==expected)throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));
+    const patch=metadataPatch(raw,rec);if(!Object.keys(patch).length)return;
+    const {values,body}=strictFrontmatter(raw),next="---\n"+stringifyYaml({...values,...patch}).trimEnd()+"\n---\n"+body,backup=await this.backupMetadata(file,raw);
+    await this.app.vault.process(file,current=>{if(current!==raw)throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));return next;});this.lastMetadataChange={file,before:raw,after:next,backup};new Notice(this.t("Пустые поля заполнены."));
+  }
+  async undoMetadata(){const change=this.lastMetadataChange;if(!change)throw new Error(this.t("Нет изменения для отмены."));if(this.app.vault.getAbstractFileByPath(change.file.path)!==change.file)throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));await this.app.vault.process(change.file,current=>{if(current!==change.after)throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));return change.before;});this.lastMetadataChange=null;new Notice(this.t("Изменение отменено."));}
   async storedStatus(kind,code) {const base=this.app.vault.getAbstractFileByPath(this.bases[kind]);if(base?.extension==="base"){try{if(usesLegacyStatuses(parseYaml(await this.app.vault.read(base))))return statusLabel(kind,code,"ru").toLowerCase();}catch{}}return code;}
   get locale() {const language=this.options?.uiLanguage||"auto";return (language==="auto"?(typeof getLanguage==="function"?getLanguage():"en"):language).startsWith("ru")?"ru":"en";}
-  t(message) {if(this.locale==="ru")return message;for(const prefix of ["Open Library: ","Google Books: "])if(typeof message==="string"&&message.startsWith(prefix))return prefix+translate(message.slice(prefix.length),"en");return translate(message,"en");}
+  t(message) {if(this.locale==="ru")return message;for(const prefix of ["Open Library: ","Google Books: ","openlibrary: ","google: ","tmdb: ","wikidata: "])if(typeof message==="string"&&message.startsWith(prefix))return prefix+translate(message.slice(prefix.length),"en");return translate(message,"en");}
   async changeStatus(file,code,expected) {
     if(!STATUS_CODES.includes(code))throw new Error(this.t("Не удалось изменить статус."));
     const raw=await this.app.vault.read(file),fm=frontmatter(raw);
@@ -443,7 +548,7 @@ class MediaPicker extends Plugin {
   setKey(name,value) {const k=this.storageKey(name);if(text(value))window.localStorage.setItem(k,text(value));else window.localStorage.removeItem(k);}
   storageKey(name) {return ID+":"+this.app.vault.getName()+":"+name;}
   enqueueAdd(fn) {const job=this.addTail.then(fn);this.addTail=job.catch(()=>{});return job;}
-  async search(kind,query,filmYear,partial=()=>{}) {
+  async search(kind,query,filmYear,partial=()=>{},provider="auto") {
     const local=[], tokens=titleKey(query).split(" ").filter(Boolean),folder=this.folders[kind];
     for(const file of catalogFiles(this.app,folder)) {
       const fm=frontmatter(await this.app.vault.read(file));if(fm.type!==kind)continue;
@@ -452,19 +557,21 @@ class MediaPicker extends Plugin {
       if(tokens.every(t=>haystack.includes(t))&&(!filmYear||String(fm.year)===filmYear))local.push({kind,source:"vault",id:file.path,title:cleanTitle(fm.title||file.basename),author:names.filter(Boolean).join(", "),year:fm.year,publisher:fm.publisher});
     }
     if(local.length)partial({items:local,warnings:[this.t("Ищу также во внешних источниках…")]});
-    try {const remote=await this.api.search(kind,query,filmYear);return {items:[...local,...remote.items],warnings:remote.warnings};}
+    try {const remote=await this.api.search(kind,query,filmYear,provider);return {items:[...local,...remote.items],warnings:remote.warnings};}
     catch(e) {if(local.length)return {items:local,warnings:[e.message]};throw e;}
   }
   async onload() {
     const data=await this.loadData();this.options={folders:{...FOLDERS},bases:{...BASES},uiLanguage:["ru","en"].includes(data?.uiLanguage)?data.uiLanguage:"auto",metadataLocale:/^[a-z]{2,3}-[A-Z]{2}$/.test(data?.metadataLocale||"")?data.metadataLocale:defaultMetadataLocale(typeof getLanguage==="function"?getLanguage():"en")};
     if(this.locale==="en")for(const [kind,name] of [["film","Movies"],["book","Books"]])if(!this.app.vault.getAbstractFileByPath(FOLDERS[kind])&&!this.app.vault.getAbstractFileByPath(BASES[kind])){this.options.folders[kind]="Media/"+name;this.options.bases[kind]="Media/"+name+".base";}
     for(const group of ["folders","bases"])for(const kind of ["film","book"])if(data?.[group]?.[kind]){try{this.options[group][kind]=catalogPath(data[group][kind],group==="bases"?".base":"");}catch{new Notice(this.t("Некорректный путь каталога: использован путь по умолчанию."));}}
+    this.options.providers={film:["auto","tmdb","wikidata"].includes(data?.providers?.film)?data.providers.film:"auto",book:["auto","google","openlibrary"].includes(data?.providers?.book)?data.providers.book:"auto"};
     this.addTail=Promise.resolve();this.api=new Api(k=>this.key(k),requestUrl,sleep,()=>Date.now(),()=>this.options.metadataLocale);this.modals=new Set();this.widgets=new Set();
     this.registerView(VIEW,leaf=>new CatalogView(leaf,this));
     this.addCommand({id:"open-catalog",name:this.t("Открыть кино и книги"),callback:()=>this.openCatalog()});
     this.addCommand({id:"open-books",name:this.t("Открыть книги"),callback:()=>this.openCatalog("book")});
     this.addCommand({id:"add-film",name:this.t("Добавить фильм"),callback:()=>this.openPicker("film")});
     this.addCommand({id:"add-book",name:this.t("Добавить книгу"),callback:()=>this.openPicker("book")});
+    for(const kind of ["film","book"])this.addCommand({id:"scan-"+kind,name:this.t(kind==="film"?"Сканировать папку кино":"Сканировать папку книг"),callback:()=>this.openScanner(kind)});
     this.addRibbonIcon("library",this.t("Кино и книги"),()=>this.openCatalog());
     this.registerMarkdownCodeBlockProcessor("media-catalog",(source,element,ctx)=>{const kind=source.trim();if(!["film","book"].includes(kind)){element.setText(this.t("Укажите film или book внутри блока media-catalog."));return;}ctx.addChild(new CatalogWidget(this,element,kind,ctx.sourcePath));});
     this.addSettingTab(new PickerSettings(this.app,this));
@@ -472,4 +579,4 @@ class MediaPicker extends Plugin {
   onunload() {for(const m of this.modals||[])m.close();for(const w of this.widgets||[])w.unload();}
 }
 module.exports=MediaPicker;
-module.exports._test={Api,SearchController,canonicalISBN,safeName,frontmatter,duplicateFiles,addCard,cardText,PickerModal,CatalogWidget,CatalogView,catalogPath,catalogFiles,baseText,FOLDERS,BASES,statusCode,statusLabel,shortDescription,translate,usesLegacyStatuses};
+module.exports._test={ScanModal,scanNotes,metadataPatch,strictFrontmatter,providerSelect,Api,SearchController,canonicalISBN,safeName,frontmatter,duplicateFiles,addCard,cardText,PickerModal,CatalogWidget,CatalogView,catalogPath,catalogFiles,baseText,FOLDERS,BASES,statusCode,statusLabel,shortDescription,translate,usesLegacyStatuses};

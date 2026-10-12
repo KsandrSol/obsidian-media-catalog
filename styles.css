@@ -24,3 +24,9 @@
 .kmp-catalog .kmp-card-summary { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; font-size: var(--font-ui-small); }
 .kmp-catalog .kmp-media-card label { display: block; font-size: var(--font-ui-small); }
 .kmp-catalog .kmp-media-card select { width: 100%; min-height: 44px; margin-top: var(--size-4-1); }
+
+.kmp-catalog button.kmp-media-cover { width: 100%; height: auto; padding: 0; cursor: pointer; }
+.kmp-catalog .kmp-card-open { min-height: 44px; margin-bottom: var(--size-4-2); }
+
+.ksandr-media-picker select { width: 100%; min-height: 44px; margin-bottom: .75em; }
+.ksandr-media-picker input[type="checkbox"] { width: auto; min-height: auto; }
