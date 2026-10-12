@@ -1,0 +1,6 @@
+node_modules/
+/main.js
+*.zip
+CHECKS.txt
+SHA256SUMS
+RELEASE.md

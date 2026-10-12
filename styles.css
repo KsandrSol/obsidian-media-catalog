@@ -1,0 +1,11 @@
+.ksandr-media-picker input { width: 100%; margin-bottom: .75em; min-height: 44px; }
+.ksandr-media-picker .kmp-result { display: block; width: 100%; height: auto; min-height: 44px; text-align: left; white-space: normal; margin: .4em 0; padding: .7em; }
+.ksandr-media-picker .kmp-results { max-height: 35vh; overflow: auto; }
+.ksandr-media-picker .kmp-preview button { display: block; margin: .6em 0; min-height: 44px; white-space: normal; height: auto; }
+.ksandr-media-picker .kmp-cover { max-width: 140px; max-height: 210px; object-fit: contain; }
+.kmp-library { height: 100%; overflow: auto; padding: var(--size-4-3); }
+.kmp-library .kmp-tabs, .kmp-catalog .kmp-catalog-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--size-4-2); margin-bottom: var(--size-4-3); }
+.kmp-library .kmp-tabs button[aria-pressed="true"] { background-color: var(--interactive-accent); color: var(--text-on-accent); }
+.kmp-catalog .kmp-catalog-bar h3 { margin: 0; flex: 1; }
+.kmp-catalog .kmp-catalog-bar button { min-height: 44px; white-space: normal; height: auto; }
+.kmp-catalog .kmp-base .internal-embed { width: 100%; }

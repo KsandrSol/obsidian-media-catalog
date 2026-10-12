@@ -1,0 +1,9 @@
+{
+  "id": "ksandr-media-picker",
+  "name": "Кино и книги",
+  "version": "0.2.0",
+  "minAppVersion": "1.9.0",
+  "description": "Каталоги на Bases, поиск фильмов и книг по названию и добавление карточек.",
+  "author": "ksandrsol",
+  "isDesktopOnly": false
+}

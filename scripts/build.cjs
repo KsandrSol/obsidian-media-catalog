@@ -1,0 +1,12 @@
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const root = path.resolve(__dirname, '..');
+const source = fs.readFileSync(path.join(root, 'src/main.js'), 'utf8');
+new vm.Script(source, {filename: 'main.js'});
+const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+if (pkg.version !== manifest.version) throw new Error('Version mismatch');
+fs.writeFileSync(path.join(root, 'main.js'), source);
+console.log('Built '+manifest.version+' (no runtime dependencies).');
