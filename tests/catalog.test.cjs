@@ -308,7 +308,7 @@ test('Мстители (2012): Wikimedia 429 respects Retry-After and identifies
  const e=environment(),requests=[],waits=[];let now=Date.UTC(2026,9,19),attempt=0;
  const entity=wikiFilm('Q182218');entity.labels.ru.value='Мстители';entity.claims.P577=[claim({time:'+2012-01-01T00:00:00Z'})];
  const base=wikiTransport(requests,entity),api=new e.T.Api(()=>'',async request=>{
-  assert.match(request.headers['User-Agent'],/^MediaCatalog\/0\.6\.0 \(https:\/\/github.com\/KsandrSol\/obsidian-media-catalog\)$/);
+  assert.match(request.headers['User-Agent'],/^MediaCatalog\/0\.7\.0 \(https:\/\/github.com\/KsandrSol\/obsidian-media-catalog\)$/);
   assert.equal(request.headers['Api-User-Agent'],request.headers['User-Agent']);
   if(attempt++===0)return {status:429,headers:{'Retry-After':'3'}};
   if(attempt===2)return {status:429,headers:{'retry-after':new Date(now+6000).toUTCString()}};
@@ -341,4 +341,34 @@ test('Матрица (1999): 260px original PNG exceeds 150KB and uses Imageinfo
   assert.equal(url,'https://thumb.wikimedia.org/small.png');return {status:200,arrayBuffer:small.buffer};
  },async()=>{});
  assert.equal((await api.cover(card.cover)).data.byteLength,5);
+});
+
+test('rating command edits the active book on mobile without an editor and preserves body and other fields',async()=>{
+ const e=environment(),original={type:'book',title:'Психология влияния',author:'[[Роберт Чалдини]]',status:'читаю',rating:null,review:'',extra:{keep:true}},f=appFixture({'Books/Психология влияния.md':fm(original)}),p=new e.Plugin(f.app);await p.onload();
+ const file=f.entries.get('Books/Психология влияния.md');f.app.workspace.getActiveFile=()=>file;
+ const modal=await p.commands.find(c=>c.id==='rate-media').callback();assert.ok(modal);assert.equal(modal.rating.find('option').length,11);
+ modal.rating.value='10';modal.review.value='Полезно: «убеждение», #заметка';await modal.contentEl.find('button').find(b=>b.textContent==='Сохранить').fire('click');
+ const next=e.T.strictFrontmatter(f.content.get(file.path));assert.deepEqual(JSON.parse(JSON.stringify(next.values)),{...original,rating:10,review:'Полезно: «убеждение», #заметка'});assert.equal(next.body,e.T.strictFrontmatter(fm(original)).body);assert.deepEqual(f.writes.map(w=>w.kind),['frontmatter']);assert.equal(p.modals.size,0);
+ const clear=await p.openReview(file);assert.equal(clear.rating.value,'10');assert.equal(clear.review.value,'Полезно: «убеждение», #заметка');clear.rating.value='';clear.review.value='';await clear.contentEl.find('button').find(b=>b.textContent==='Сохранить').fire('click');const cleared=e.T.frontmatter(f.content.get(file.path));assert.equal(cleared.rating,null);assert.equal(cleared.review,'');
+});
+test('rating validates range, integer and single-line review; cancellation and invalid notes write nothing',async()=>{
+ const e=environment(),values={type:'film',title:'Матрица',year:1999,rating:1,review:'Мой отзыв'},f=appFixture({'Films/Матрица.md':fm(values),'Other.md':fm({title:'Задача'})}),p=new e.Plugin(f.app);await p.onload();const file=f.entries.get('Films/Матрица.md');
+ for(const value of [0,11,2.5,'x',true])await assert.rejects(p.saveReview(file,value,'отзыв',values),/целым/);
+ for(const value of ['первая\nвторая','первая\rвторая','a\u2028b'])await assert.rejects(p.saveReview(file,5,value,values),/строкой/);
+ const m=await p.openReview(file);await m.contentEl.find('button').find(b=>b.textContent==='Отмена').fire('click');await p.openReview(f.entries.get('Other.md'));await p.openReview(null);assert.equal(f.writes.length,0);assert.equal(p.modals.size,0);
+ await p.saveReview(file,1,'Нижняя граница',values);assert.equal(e.T.frontmatter(f.content.get(file.path)).rating,1);
+});
+test('rating refuses stale personal fields but preserves concurrent metadata and reports write failures',async()=>{
+ const e=environment(),values={type:'film',title:'Дюна',rating:8,review:'Хорошо'},f=appFixture({'Films/Дюна.md':fm(values)}),p=new e.Plugin(f.app);await p.onload();const file=f.entries.get('Films/Дюна.md');
+ f.content.set(file.path,fm({...values,review:'Отзыв с телефона'}));await assert.rejects(p.saveReview(file,9,'Старое окно',values),/изменена/);assert.equal(f.writes.length,0);
+ f.content.set(file.path,fm({...values,year:2021}));await p.saveReview(file,9,'Новый отзыв',values);assert.equal(e.T.frontmatter(f.content.get(file.path)).year,2021);
+ const modal=await p.openReview(file);f.app.fileManager.processFrontMatter=async()=>{throw new Error('disk error');};await modal.contentEl.find('button').find(b=>b.textContent==='Сохранить').fire('click');assert.ok(p.modals.has(modal));assert.ok(e.notices.includes('disk error'));modal.close();
+});
+test('catalog cards and kanban display rating and review and open the same editor',async()=>{
+ const e=environment(),f=appFixture(),p=new e.Plugin(f.app);await p.onload();const file=f.file(p.folders.film+'/Матрица.md',fm({type:'film',title:'Матрица',rating:9,review:'Пересмотрю <b>ещё</b>'}));
+ for(const mode of ['cards','kanban']){const element=new El(),w=new e.T.CatalogWidget(p,element,'film','',mode);w.load();await w.refresh();const article=element.find('article')[0];assert.ok(article.find('p').some(x=>x.textContent==='Моя оценка: 9 / 10'));assert.ok(article.find('p').some(x=>x.textContent==='Пересмотрю <b>ещё</b>'));await article.find('button').find(x=>x.textContent==='Оценить').fire('click');const modal=[...p.modals][0];assert.equal(modal.file,file);modal.close();w.unload();}
+});
+test('review is a personal field in new cards, every rating base view and metadata filling',async()=>{
+ const e=environment();for(const kind of ['book','film']){const r=record(kind);r.fields.review='Отзыв источника';r.fields.rating=3;const config=yaml.parse(e.T.baseText(kind,e.T.FOLDERS[kind],'ru'));assert.equal(config.properties.review.displayName,'Мой отзыв');for(const view of config.views)if(view.order.includes('rating'))assert.ok(view.order.includes('review'));
+ assert.equal(e.T.frontmatter(e.T.cardText(r)).review,'');for(const review of ['',null,'Мой отзыв']){const raw=fm({type:kind,author:'[[Роберт Чалдини]]',rating:9,review}),patch=e.T.metadataPatch(raw,r);assert.equal(Object.hasOwn(patch,'review'),false);assert.equal(Object.hasOwn(patch,'rating'),false);}}
 });

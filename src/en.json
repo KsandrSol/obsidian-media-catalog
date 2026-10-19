@@ -196,5 +196,12 @@
   "Таймер запущен.": "Timer started.",
   "Таймер остановлен.": "Timer stopped.",
   "Добавить открытую карточку в TaskNotes": "Add the open media note to TaskNotes",
-  "Подходящих заметок в папке нет. Проверьте папку и поле type (film или book).": "No matching notes in this folder. Check the folder and the type property (film or book)."
+  "Подходящих заметок в папке нет. Проверьте папку и поле type (film или book).": "No matching notes in this folder. Check the folder and the type property (film or book).",
+  "Оценить": "Rate",
+  "Не оценено": "Not rated",
+  "Отзыв должен быть одной строкой.": "Review must be a single line.",
+  "Оценка должна быть целым числом от 1 до 10.": "Rating must be an integer from 1 to 10.",
+  "Оценка и отзыв сохранены.": "Rating and review saved.",
+  "Сохранить": "Save",
+  "Отмена": "Cancel"
 }

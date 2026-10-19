@@ -33,8 +33,8 @@ function catalogFiles(app,folder) {
 }
 function baseText(kind,folder,locale="ru") {
   const creator=kind==="film"?"director":"author";
-  const tr=v=>translate(v,locale),order=["file.name",creator,"year","summary","status","rating"],cards={type:"cards",name:tr("Карточки"),order,image:"note.cover",imageFit:"contain",imageAspectRatio:0.67};
-  return stringifyYaml({filters:{and:["file.inFolder("+JSON.stringify(folder)+")","type == "+JSON.stringify(kind)]},properties:{title:{displayName:tr("Название")},status:{displayName:tr("Статус")},rating:{displayName:tr("Моя оценка")},[creator]:{displayName:tr(kind==="film"?"Режиссёр":"Автор")},year:{displayName:tr("Год")},summary:{displayName:tr("Описание")}},views:[cards,{type:"table",name:tr("Таблица"),order,sort:[{property:"title",direction:"ASC"}]},...STATUS_CODES.map(code=>({...cards,name:statusLabel(kind,code,locale),filters:STATUS_ALIASES[code].map(s=>"status == "+JSON.stringify(s)).join(" || ")}))]});
+  const tr=v=>translate(v,locale),order=["file.name",creator,"year","summary","status","rating","review"],cards={type:"cards",name:tr("Карточки"),order,image:"note.cover",imageFit:"contain",imageAspectRatio:0.67};
+  return stringifyYaml({filters:{and:["file.inFolder("+JSON.stringify(folder)+")","type == "+JSON.stringify(kind)]},properties:{title:{displayName:tr("Название")},status:{displayName:tr("Статус")},rating:{displayName:tr("Моя оценка")},review:{displayName:tr("Мой отзыв")},[creator]:{displayName:tr(kind==="film"?"Режиссёр":"Автор")},year:{displayName:tr("Год")},summary:{displayName:tr("Описание")}},views:[cards,{type:"table",name:tr("Таблица"),order,sort:[{property:"title",direction:"ASC"}]},...STATUS_CODES.map(code=>({...cards,name:statusLabel(kind,code,locale),filters:STATUS_ALIASES[code].map(s=>"status == "+JSON.stringify(s)).join(" || ")}))]});
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const text = v => typeof v === "string" ? v.trim() : "";
@@ -112,7 +112,7 @@ class Api {
     const host=new URL(url).hostname;
     if(host==="wikidata.org"||host.endsWith(".wikidata.org")||host.endsWith(".wikipedia.org")||host.endsWith(".wikimedia.org")) {
       const job=this.wikiTail.then(async()=>{
-        const agent="MediaCatalog/0.6.0 (https://github.com/KsandrSol/obsidian-media-catalog)";
+        const agent="MediaCatalog/0.7.0 (https://github.com/KsandrSol/obsidian-media-catalog)";
         for(let attempt=0;attempt<4;attempt++){
           const wait=this.lastWiki+1050-this.now();if(wait>0)await this.delay(wait);
           let r;try{r=await this.rawResponse(url,{...headers,"User-Agent":agent,"Api-User-Agent":agent});}finally{this.lastWiki=this.now();}
@@ -331,7 +331,7 @@ async function duplicateFiles(app, rec, folders=FOLDERS) {
 }
 function cardText(rec,locale="ru",initialStatus="planned") {
   const f=rec.fields;if(statusCode(initialStatus)==="other")throw new Error("Неизвестный статус каталога.");
-  const fm={...f,type:rec.kind,status:statusLabel(rec.kind,statusCode(initialStatus),"ru").toLowerCase(),summary:cleanTitle((rec.description||"").replace(/\s+/g," ")).slice(0,280),rating:null,started:null,finished:null,added:isoDate(),source:rec.source,source_id:rec.source_id,tags:[rec.kind==="film"?"кино":"книга"]};
+  const fm={...f,type:rec.kind,status:statusLabel(rec.kind,statusCode(initialStatus),"ru").toLowerCase(),summary:cleanTitle((rec.description||"").replace(/\s+/g," ")).slice(0,280),rating:null,review:"",started:null,finished:null,added:isoDate(),source:rec.source,source_id:rec.source_id,tags:[rec.kind==="film"?"кино":"книга"]};
   if(rec.kind==="book") { fm.original_title=null;fm.highlights=null;fm.isbn=arr(f.isbn).map(String); }
   const heading=translate(rec.kind==="film"?"О чём":"О книге",locale);
   return "---\n"+stringifyYaml(fm).trimEnd()+"\n---\n\n# "+f.title+"\n\n## "+heading+"\n\n"+(rec.description||"")+"\n\n## "+translate(rec.kind==="film"?"Мой отзыв":"Мои мысли",locale)+"\n\n## "+translate("Источник метаданных",locale)+"\n\n"+f.source_url+"\n\n";
@@ -396,6 +396,25 @@ async function scanNotes(plugin,folder,kind,recursive=true) {
       rows.push({file,raw,query,bookQuery:kind==="book"?{title,author,isbn:ids}:null,year:release?String(release):""});
     }catch{warnings.push(file.path+": "+plugin.t("Некорректный YAML: заметка пропущена."));}
   }return {rows,warnings};
+}
+class ReviewModal extends Modal {
+  constructor(plugin,file,values){super(plugin.app);this.plugin=plugin;this.file=file;this.expected={type:values.type,rating:values.rating,review:values.review};}
+  onOpen(){
+    const c=this.contentEl,t=v=>this.plugin.t(v);c.addClass("ksandr-media-picker");
+    c.createEl("h2",{text:t("Оценить")+": "+this.file.basename});
+    const ratingLabel=c.createEl("label",{text:t("Моя оценка")});this.rating=ratingLabel.createEl("select",{attr:{"aria-label":t("Моя оценка")}});
+    this.rating.createEl("option",{text:t("Не оценено"),attr:{value:""}});
+    for(let n=1;n<=10;n++)this.rating.createEl("option",{text:String(n),attr:{value:String(n)}});
+    this.rating.value=this.expected.rating==null?"":String(this.expected.rating);
+    const reviewLabel=c.createEl("label",{text:t("Мой отзыв")});this.review=reviewLabel.createEl("input",{attr:{type:"text","aria-label":t("Мой отзыв")}});this.review.value=typeof this.expected.review==="string"?this.expected.review:"";
+    const save=c.createEl("button",{text:t("Сохранить"),cls:"mod-cta",attr:{type:"button"}});
+    save.addEventListener("click",async()=>{if(this.busy)return;this.busy=true;save.disabled=true;
+      try{await this.plugin.saveReview(this.file,this.rating.value,this.review.value,this.expected);this.close();}
+      catch(e){new Notice(t(e.message));}finally{this.busy=false;save.disabled=false;}
+    });
+    c.createEl("button",{text:t("Отмена"),attr:{type:"button"}}).addEventListener("click",()=>this.close());
+  }
+  onClose(){this.plugin.modals.delete(this);this.contentEl.empty();}
 }
 class ScanModal extends Modal {
   constructor(plugin,kind){super(plugin.app);this.plugin=plugin;this.kind=kind;this.closed=false;this.serial=0;this.index=0;this.rows=[];this.provider=plugin.options.providers[kind];}
@@ -596,6 +615,9 @@ class CatalogWidget extends MarkdownRenderChild {
     const title=card.createEl("button",{text:String(fm.title||file.basename),cls:"kmp-card-title"});this.renderer.registerDomEvent(title,"click",openNote);
     const creator=fm.author||fm.director;card.createEl("p",{text:[Array.isArray(creator)?creator.join(", "):creator,fm.year].filter(Boolean).join(" · "),cls:"kmp-card-meta"});
     card.createEl("p",{text:summary||this.plugin.t("Нет описания"),cls:"kmp-card-summary"});
+    card.createEl("p",{text:this.plugin.t("Моя оценка")+": "+(Number.isInteger(fm.rating)&&fm.rating>=1&&fm.rating<=10?fm.rating+" / 10":this.plugin.t("Не оценено")),cls:"kmp-card-meta"});
+    if(typeof fm.review==="string"&&fm.review)card.createEl("p",{text:fm.review,cls:"kmp-card-review"});
+    const rate=card.createEl("button",{text:this.plugin.t("Оценить"),cls:"kmp-card-open",attr:{type:"button"}});this.renderer.registerDomEvent(rate,"click",()=>this.plugin.openReview(file));
     const open=card.createEl("button",{text:this.plugin.t("Открыть заметку"),cls:"kmp-card-open",attr:{type:"button"}});this.renderer.registerDomEvent(open,"click",openNote);
     const task=card.createEl("button",{text:this.plugin.t("В задачу"),cls:"kmp-card-open",attr:{type:"button"}});this.renderer.registerDomEvent(task,"click",()=>this.plugin.openTaskModal(file));
     let taskPaths=[];try{taskPaths=linkedTaskPaths(this.plugin.app,file,fm);}catch(e){card.createEl("p",{text:this.plugin.t(e.message),cls:"kmp-help"});}
@@ -688,6 +710,26 @@ class MediaPicker extends Plugin {
   async startMediaTask(path){const api=this.taskNotesApi("time.write");if(!api.hasCapability("time.read")||typeof api.time?.active!=="function"||typeof api.time?.start!=="function")throw new Error(this.t("В этой версии TaskNotes таймер недоступен."));const active=await api.time.active();if(active.some(entry=>entry.taskPath===path)){await this.openTaskNote(path);new Notice(this.t("Таймер этой задачи уже запущен."));return;}if(active.length)throw new Error(this.t("Уже идёт таймер другой задачи. Остановите его в TaskNotes перед запуском."));if(!await api.tasks.get(path))throw new Error(this.t("Файл задачи не найден."));const taskFile=this.app.vault.getAbstractFileByPath(path);if(taskFile?.extension!=="md")throw new Error(this.t("Файл задачи не найден."));await this.snapshotMetadata(taskFile,await this.app.vault.read(taskFile));await api.time.start(path,{description:this.t("Чтение / просмотр")},{source:ID,reason:"user started a media session"});await this.openTaskNote(path);new Notice(this.t("Таймер запущен."));}
   async stopMediaTask(path){const api=this.taskNotesApi("time.write");if(!api.hasCapability("time.read")||typeof api.time?.active!=="function"||typeof api.time?.stop!=="function")throw new Error(this.t("В этой версии TaskNotes таймер недоступен."));const active=await api.time.active();if(active.some(entry=>entry.taskPath===path)){const taskFile=this.app.vault.getAbstractFileByPath(path);if(taskFile?.extension!=="md")throw new Error(this.t("Файл задачи не найден."));await this.snapshotMetadata(taskFile,await this.app.vault.read(taskFile));await api.time.stop(path,{source:ID,reason:"user stopped a media session"});}new Notice(this.t("Таймер остановлен."));}
 
+  async openReview(file){
+    try{
+      if(file?.extension!=="md")throw new Error(this.t("Откройте карточку фильма или книги."));
+      const {values}=strictFrontmatter(await this.app.vault.read(file));
+      if(!["film","book"].includes(values.type))throw new Error(this.t("Откройте карточку фильма или книги."));
+      const modal=new ReviewModal(this,file,values);this.modals.add(modal);modal.open();return modal;
+    }catch(e){new Notice(this.t(e.message));}
+  }
+  async saveReview(file,rating,review,expected){
+    const value=rating==null||rating===""?null:Number(rating);
+    if(value!==null&&(!Number.isInteger(value)||value<1||value>10)||typeof rating==="boolean")throw new Error("Оценка должна быть целым числом от 1 до 10.");
+    if(typeof review!=="string"||/[\r\n\u2028\u2029]/.test(review))throw new Error("Отзыв должен быть одной строкой.");
+    if(this.app.vault.getAbstractFileByPath(file.path)!==file)throw new Error("Карточка была изменена. Обновите каталог и повторите.");
+    await this.app.fileManager.processFrontMatter(file,current=>{
+      if(!["film","book"].includes(current.type)||current.type!==expected.type||JSON.stringify(current.rating)!==JSON.stringify(expected.rating)||JSON.stringify(current.review)!==JSON.stringify(expected.review))throw new Error("Карточка была изменена. Обновите каталог и повторите.");
+      current.rating=value;current.review=review;
+    });
+    for(const widget of this.widgets)widget.refresh().catch(()=>{});
+    new Notice(this.t("Оценка и отзыв сохранены."));
+  }
   openScanner(kind){const modal=new ScanModal(this,kind);this.modals.add(modal);const original=modal.onClose.bind(modal);modal.onClose=()=>{original();this.modals.delete(modal);};modal.open();}
   async snapshotMetadata(file,raw){if(this.app.vault.getAbstractFileByPath(file.path)!==file||await this.app.vault.read(file)!==raw)throw new Error(this.t("Карточка была изменена. Обновите каталог и повторите."));return raw;}
   async mergeMetadata(file,rec,expected){
@@ -758,6 +800,7 @@ class MediaPicker extends Plugin {
     this.options.providers={film:["auto","kinopoisk","tmdb","wikidata"].includes(data?.providers?.film)?data.providers.film:"auto",book:["auto","chitai","google","openlibrary"].includes(data?.providers?.book)?data.providers.book:"auto"};
     this.addTail=Promise.resolve();this.api=new Api(k=>this.key(k),requestUrl,sleep,()=>Date.now(),()=>this.options.metadataLocale);this.modals=new Set();this.widgets=new Set();
     this.registerView(VIEW,leaf=>new CatalogView(leaf,this));
+    this.addCommand({id:"rate-media",name:this.t("Оценить"),callback:()=>this.openReview(this.app.workspace.getActiveFile?.())});
     this.addCommand({id:"open-catalog",name:this.t("Открыть кино и книги"),callback:()=>this.openCatalog()});
     this.addCommand({id:"open-books",name:this.t("Открыть книги"),callback:()=>this.openCatalog("book")});
     this.addCommand({id:"add-film",name:this.t("Добавить фильм"),callback:()=>this.openPicker("film")});
@@ -771,4 +814,4 @@ class MediaPicker extends Plugin {
   onunload() {for(const m of this.modals||[])m.close();for(const w of this.widgets||[])w.unload();}
 }
 module.exports=MediaPicker;
-module.exports._test={chitaiSearch,chitaiDetails,smallCover,localCover,TaskNotesModal,mediaWikiLink,linkedTaskPaths,validTaskDate,ScanModal,scanNotes,metadataPatch,strictFrontmatter,providerSelect,Api,SearchController,canonicalISBN,safeName,frontmatter,duplicateFiles,addCard,cardText,PickerModal,CatalogWidget,CatalogView,catalogPath,catalogFiles,baseText,FOLDERS,BASES,statusCode,statusLabel,shortDescription,translate};
+module.exports._test={ReviewModal,chitaiSearch,chitaiDetails,smallCover,localCover,TaskNotesModal,mediaWikiLink,linkedTaskPaths,validTaskDate,ScanModal,scanNotes,metadataPatch,strictFrontmatter,providerSelect,Api,SearchController,canonicalISBN,safeName,frontmatter,duplicateFiles,addCard,cardText,PickerModal,CatalogWidget,CatalogView,catalogPath,catalogFiles,baseText,FOLDERS,BASES,statusCode,statusLabel,shortDescription,translate};

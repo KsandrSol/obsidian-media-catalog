@@ -33,3 +33,5 @@
 
 .ksandr-media-picker .kmp-task-row { border: 1px solid var(--background-modifier-border); padding: var(--size-4-2); margin-bottom: var(--size-4-2); border-radius: var(--radius-m); }
 .ksandr-media-picker .kmp-task-row button { min-height: 44px; height: auto; white-space: normal; margin: var(--size-4-1); }
+
+.kmp-card-review { white-space: pre-wrap; overflow-wrap: anywhere; }

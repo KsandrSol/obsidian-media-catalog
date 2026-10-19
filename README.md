@@ -98,3 +98,9 @@ Cover downloads happen only when saving. They are saved under the configured mov
 Enter the Kinopoisk key in plugin settings on each device, just like TMDB. It stays in device-local storage, not data.json. Server live checks use KINOPOISK_API_KEY. Updating the plugin replaces main.js, manifest.json and styles.css; preserve data.json.
 
 Live source checks: node scripts/check-live.cjs and node scripts/check-live-films.cjs (the latter uses Kinopoisk when KINOPOISK_API_KEY is set, otherwise Wikidata). They read the acceptance cards and save evidence only under ignored checks/. They do not prove desktop/mobile Obsidian rendering; final acceptance is performed on the Mac.
+
+## Personal ratings and reviews in 0.7.0
+
+Use **Rate** from the command palette with an open film/book note (desktop or mobile), or the **Rate** button on a catalog card or Kanban item. Choose an integer from 1 to 10 or Not rated, enter a single-line review, and save. The plugin updates only `rating` and `review` through `FileManager.processFrontMatter`; stale personal edits are rejected. Both fields appear on catalog cards and remain protected during metadata filling. New Base templates include My review in every view with My rating; existing bases are left for their owner to update.
+
+The installation archive is `ksandr-media-picker-0.7.0.zip` and contains only `ksandr-media-picker/` with `main.js`, `manifest.json`, and `styles.css`. `INSTALL-0.7.0.md` is distributed separately beside it. Keep the installed `data.json` when replacing the three plugin files.
