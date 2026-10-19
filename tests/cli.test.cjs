@@ -97,3 +97,22 @@ test('book title alone does not merge different authors and films still distingu
  const remake=await execute('add',{vault,kind:'film',title:'Дюна',year:2021},options);
  assert.equal(remake.existing,false);assert.notEqual(original.path,remake.path);
 });
+
+test('adding collections preserves a long summary line byte for byte',async t=>{
+ const vault=temporary(t),input={vault,kind:'book',title:'Цель',author:'Элияху Голдратт'},first=await execute('add',input,options),file=path.join(vault,first.path);
+ const summary='summary: '+JSON.stringify('Длинное описание владельца, которое не должно переноситься на новые строки. '.repeat(8));
+ const raw=fs.readFileSync(file,'utf8').replace(/^summary:.*$/m,summary);fs.writeFileSync(file,raw);
+ const result=await execute('add',{...input,collections:['[[Подборка]]']},options);
+ const updated=fs.readFileSync(file,'utf8');assert.equal(result.existing,true);assert.equal(updated.split('\n').find(l=>l.startsWith('summary:')),summary);
+ assert.equal(updated.replace(/^collections:\n  - .*\n/m,'collections: []\n'),raw);
+});
+test('existing provenance suppresses generic Telegram but accepts genuine sources; new cards keep it',async t=>{
+ const vault=temporary(t),input={vault,kind:'book',title:'Цель',author:'Элияху Голдратт'},first=await execute('add',input,options);
+ const generic='Telegram, тема «Медиа» · 2026-10-19';
+ const skipped=await execute('add',{...input,found_via:generic,found_via_existing:''},options);
+ assert.equal(skipped.existing,true);assert.equal(fm(vault,first.path).found_via,'');
+ const real='Книжный канал · https://t.me/books/42';
+ await execute('add',{...input,found_via:real,found_via_existing:real},options);assert.equal(fm(vault,first.path).found_via,real);
+ await execute('add',{...input,found_via:'Другой источник',found_via_existing:'Другой источник'},options);assert.equal(fm(vault,first.path).found_via,real);
+ const added=await execute('add',{...input,title:'Новая книга',found_via:generic,found_via_existing:''},options);assert.equal(added.existing,false);assert.equal(fm(vault,added.path).found_via,generic);
+});
