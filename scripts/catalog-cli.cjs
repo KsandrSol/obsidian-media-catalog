@@ -6,6 +6,16 @@ const {loadCore,transport,readKey}=require('./catalog-runtime.cjs');
 const digest=v=>crypto.createHash('sha256').update(v).digest('hex');
 const line=v=>typeof v==='string'?v.replace(/[\r\n]/g,' ').trim():'';
 const titleKey=v=>line(v).toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+const mainTitle=v=>titleKey(line(v).split(/[.:(]| — | - /,1)[0]);
+function authorSurnames(value){
+ const authors=Array.isArray(value)?value:[value];
+ return authors.flatMap(v=>typeof v==='string'?v.replace(/\[\[([^\]]+)\]\]/g,(_,name)=>name.split('|').pop()).split(/[,;]+/):[]).map(v=>titleKey(v).split(' ').pop()).filter(Boolean);
+}
+function sameBook(fm,rec,fallbackAuthor){
+ const title=mainTitle(rec.fields.title),authors=authorSurnames(rec.fields.author);
+ const surnames=authors.length?authors:authorSurnames(fallbackAuthor);
+ return fm.type==='book'&&title&&mainTitle(fm.title)===title&&authorSurnames(fm.author).some(name=>surnames.includes(name));
+}
 const ERRORS={invalid_input:"Проверьте название и параметры позиции.",busy:"Каталог занят; повторите позже.",card_changed:"Карточка изменилась; обновите выбор.",not_found:"Карточка или каталог не найдены.",network:"Источник временно недоступен; попробуйте позже.",write_failed:"Не удалось сохранить данные каталога."};
 class CliError extends Error{constructor(code,message){super(message||ERRORS[code]);this.code=code;}}
 function errorResult(e){const code=e instanceof CliError&&Object.hasOwn(ERRORS,e.code)?e.code:e?.code==='ENOENT'?'not_found':'write_failed';return {ok:false,code,error:ERRORS[code]};}
@@ -53,7 +63,8 @@ async function execute(command,input,options={}){
   if(candidates.length&&!rec){if(command==='replace')throw new CliError('network', 'Candidate unavailable; original kept');notices.push('Метаданные недоступны; сохранена незаполненная карточка.');}
   if(!rec){const title=line(input.title);if(!title)throw new CliError('invalid_input', 'Title required');rec={kind:input.kind,source:'manual',source_id:digest(JSON.stringify([input.kind,titleKey(title),input.year||'',input.author||''])).slice(0,20),description:'',fields:{title,year:T.sortNumber(input.year,'year'),...(input.kind==='book'?{author:line(input.author)?[line(input.author)]:[]}:{}),source_url:''}};}
   const found=await T.duplicateFiles(app,rec,folders);let existing=found.matches[0];
-  if(!existing)existing=found.similar.find(f=>{const fm=T.frontmatter(fs.readFileSync(vault.resolve(f.path),'utf8'));return (!rec.fields.year||!fm.year||String(fm.year)===String(rec.fields.year))&&(input.kind!=='book'||!line(input.author)||!fm.author||titleKey(String(fm.author).replace(/\[\[|\]\]/g,'')).includes(titleKey(input.author)));});
+  if(!existing&&input.kind==='book')existing=T.catalogFiles(app,folders.book).find(f=>{const fm=T.frontmatter(fs.readFileSync(vault.resolve(f.path),'utf8'));return sameBook({...fm,title:fm.title||f.basename},rec,input.author);});
+  if(!existing&&input.kind==='film')existing=found.similar.find(f=>{const fm=T.frontmatter(fs.readFileSync(vault.resolve(f.path),'utf8'));return !rec.fields.year||!fm.year||String(fm.year)===String(rec.fields.year);});
   const old=command==='replace'?vault.getAbstractFileByPath(input.path):null;
   if(command==='replace'&&(!old||!old.path.startsWith(folders[input.kind]+'/')))throw new CliError('not_found', 'Original card missing');
   if(command==='replace'&&digest(await vault.read(old))!==input.expected)throw new CliError('card_changed', 'Card changed; original kept');

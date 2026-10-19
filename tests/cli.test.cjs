@@ -77,3 +77,23 @@ test('add falls back only after every candidate fails and validates the list',as
  assert.equal(seen.length,2);assert.equal(result.candidate,null);assert.equal(fm(vault,result.path).source,'manual');assert.equal(result.warnings.length,1);
  for(const bad of [{},[null],[{kind:'film',source:'chitai',id:'1'}]])await assert.rejects(execute('add',{vault,kind:'book',title:'Книга',candidates:bad},options),e=>e.code==='invalid_input');
 });
+
+test('book editions match main title and author surname despite different years and ISBNs',async t=>{
+ for(const title of ['Цель','Цель. Процесс непрерывного улучшения']){
+  const vault=temporary(t),folder='Areas/Личное/Книги',file=folder+'/Цель.md';fs.mkdirSync(path.join(vault,folder),{recursive:true});
+  const raw='---\ntype: book\ntitle: Цель\nauthor: "[[Элияху Голдратт]]"\nyear: 1984\nisbn: "9785000000019"\nrating: 9\n---\nМой текст\n';fs.writeFileSync(path.join(vault,file),raw);
+  const candidate={kind:'book',source:'chitai',id:'2366042',path:'/product/cel-2366042'};
+  const transport=async r=>({status:200,text:'<script type="application/ld+json">'+JSON.stringify({'@type':'Book',url:r.url,name:title,author:{name:'Э. Голдратт'},datePublished:'2013',isbn:'9785000000026'})+'</script>'});
+  const result=await execute('add',{vault,kind:'book',title:'Цель',candidate},{...options,transport});
+  assert.equal(result.existing,true);assert.equal(result.path,file);assert.deepEqual(fs.readdirSync(path.join(vault,folder)),['Цель.md']);assert.equal(fs.readFileSync(path.join(vault,file),'utf8'),raw);
+ }
+});
+test('book title alone does not merge different authors and films still distinguish release years',async t=>{
+ const vault=temporary(t);
+ const first=await execute('add',{vault,kind:'book',title:'Цель',author:'Элияху Голдратт',year:1984},options);
+ const other=await execute('add',{vault,kind:'book',title:'Цель',author:'Другой Автор',year:2013},options);
+ assert.equal(other.existing,false);assert.notEqual(first.path,other.path);
+ const original=await execute('add',{vault,kind:'film',title:'Дюна',year:1984},options);
+ const remake=await execute('add',{vault,kind:'film',title:'Дюна',year:2021},options);
+ assert.equal(remake.existing,false);assert.notEqual(original.path,remake.path);
+});
