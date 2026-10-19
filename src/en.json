@@ -203,5 +203,14 @@
   "Оценка должна быть целым числом от 1 до 10.": "Rating must be an integer from 1 to 10.",
   "Оценка и отзыв сохранены.": "Rating and review saved.",
   "Сохранить": "Save",
-  "Отмена": "Cancel"
+  "Отмена": "Cancel",
+  "Сначала актуальное": "Current first",
+  "Недавно добавленные": "Recently added",
+  "Год выхода": "Release year",
+  "Сортировка": "Sort by",
+  "По возрастанию": "Ascending",
+  "По убыванию": "Descending",
+  "Сменить направление сортировки": "Reverse sort direction",
+  "Сортировка по умолчанию": "Default sorting",
+  "Действия": "Actions"
 }

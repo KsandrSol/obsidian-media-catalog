@@ -1,5 +1,5 @@
 "use strict";
-const { Plugin, Modal, ItemView, Component, MarkdownRenderChild, MarkdownRenderer, PluginSettingTab, Setting, Notice, requestUrl, parseYaml, stringifyYaml, normalizePath, getLanguage } = require("obsidian");
+const { Plugin, Modal, ItemView, Component, MarkdownRenderChild, PluginSettingTab, Setting, Notice, requestUrl, parseYaml, stringifyYaml, normalizePath, getLanguage } = require("obsidian");
 const EN = require("./en.json");
 function translate(value,locale="ru") {if(locale==="ru"||typeof value!=="string")return value;if(EN[value])return EN[value];const prefix="Путь базы должен оканчиваться на ";return value.startsWith(prefix)?EN[prefix]+value.slice(prefix.length):value;}
 function defaultMetadataLocale(language) {const lang=String(language||"en").replace(/_/g,"-").toLowerCase();const regions={ru:"RU",en:"US",de:"DE",fr:"FR",es:"ES",it:"IT",pt:"BR",ja:"JP",ko:"KR",zh:"CN",nl:"NL",pl:"PL",uk:"UA",tr:"TR",ar:"SA",hi:"IN",sv:"SE",fi:"FI",cs:"CZ"};if(/^[a-z]{2,3}-[a-z]{2}$/.test(lang))return lang.split("-")[0]+"-"+lang.split("-")[1].toUpperCase();return regions[lang]?lang+"-"+regions[lang]:"en-US";}
@@ -10,6 +10,42 @@ function statusLabel(kind,code,locale) {return translate(({planned:kind==="film"
 
 function creatorDisplay(value) {
   return (Array.isArray(value)?value:[value]).filter(v=>typeof v==="string").map(v=>v.replace(/\[\[([^\]\r\n]+)\]\]/g,(_,link)=>link.includes("|")?link.slice(link.indexOf("|")+1):link).trim()).filter(Boolean).join(", ");
+}
+const SORT_LABELS={current:"Сначала актуальное",added:"Недавно добавленные",rating:"Моя оценка",title:"Название",year:"Год выхода"};
+function sortOption(value){const key=Object.hasOwn(SORT_LABELS,value?.key)?value.key:"current";return {key,direction:["asc","desc"].includes(value?.direction)?value.direction:key==="title"?"asc":"desc"};}
+function sortDate(value){
+  if(Object.prototype.toString.call(value)==="[object Date]"){const n=value.getTime();return Number.isFinite(n)?n:null;}
+  if(typeof value!=="string"||!/^\d{4}-\d{2}-\d{2}$/.test(value))return null;
+  const n=Date.parse(value+"T00:00:00Z");return Number.isFinite(n)&&new Date(n).toISOString().slice(0,10)===value?n:null;
+}
+function sortNumber(value,key){
+  if(typeof value!=="number"&&(typeof value!=="string"||!/^\d+(?:\.0+)?$/.test(value.trim())))return null;
+  const n=Number(value);return Number.isInteger(n)&&n>=1&&n<=(key==="rating"?10:9999)?n:null;
+}
+function sortItems(items,option,locale="ru"){
+  const {key,direction}=sortOption(option),sign=direction==="asc"?1:-1;
+  const cmp=(a,b)=>a==null?(b==null?0:1):b==null?-1:sign*(typeof a==="string"?a.localeCompare(b,locale):a-b);
+  const title=i=>text(i.fm.title)||text(i.file.basename)||null;
+  const rank=i=>emptyValue(i.fm.status)?null:({in_progress:6,planned:5,on_hold:4,completed:3,dropped:2,other:1})[statusCode(i.fm.status)];
+  const date=i=>{const code=statusCode(i.fm.status);return sortDate(i.fm[["in_progress","on_hold"].includes(code)?"started":["completed","dropped"].includes(code)?"finished":"added"])??sortDate(i.fm.added);};
+  return items.sort((a,b)=>{
+    let result=0;
+    if(key==="current")result=cmp(rank(a),rank(b))||cmp(date(a),date(b));
+    else if(key==="added")result=cmp(sortDate(a.fm.added),sortDate(b.fm.added));
+    else if(key!=="title")result=cmp(sortNumber(a.fm[key],key),sortNumber(b.fm[key],key));
+    const byTitle=cmp(title(a),title(b));
+    return result||(key==="title"||title(a)==null||title(b)==null?byTitle:-byTitle)||String(a.file.path).localeCompare(String(b.file.path),locale);
+  });
+}
+function sortingControls(plugin,container,kind,owner){
+  const current=sortOption(plugin.options.sorting[kind]),box=container.createDiv({cls:"kmp-sort-controls"}),label=box.createEl("label",{text:plugin.t("Сортировка")}),select=label.createEl("select",{attr:{"aria-label":plugin.t("Сортировка")}});
+  for(const [key,name] of Object.entries(SORT_LABELS))select.createEl("option",{text:plugin.t(name),attr:{value:key}});select.value=current.key;
+  const button=box.createEl("button",{text:plugin.t(current.direction==="asc"?"По возрастанию":"По убыванию"),attr:{type:"button","aria-label":plugin.t("Сменить направление сортировки")}});
+  const bind=(el,event,fn)=>owner?owner.registerDomEvent(el,event,fn):el.addEventListener(event,fn);
+  const save=async next=>{select.disabled=true;button.disabled=true;try{await plugin.setSorting(kind,next);}catch{select.value=current.key;new Notice(plugin.t("Не удалось сохранить настройки."));}finally{select.disabled=false;button.disabled=false;}};
+  bind(select,"change",()=>save({key:select.value,direction:select.value==="title"?"asc":"desc"}));
+  bind(button,"click",()=>{const value=sortOption(plugin.options.sorting[kind]);return save({...value,direction:value.direction==="asc"?"desc":"asc"});});
+  return box;
 }
 function shortDescription(raw,fm={}) {
   const body=raw.replace(/^\ufeff?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/,"");
@@ -115,7 +151,7 @@ class Api {
     const host=new URL(url).hostname;
     if(host==="wikidata.org"||host.endsWith(".wikidata.org")||host.endsWith(".wikipedia.org")||host.endsWith(".wikimedia.org")) {
       const job=this.wikiTail.then(async()=>{
-        const agent="MediaCatalog/0.7.1 (https://github.com/KsandrSol/obsidian-media-catalog)";
+        const agent="MediaCatalog/0.8.0 (https://github.com/KsandrSol/obsidian-media-catalog)";
         for(let attempt=0;attempt<4;attempt++){
           const wait=this.lastWiki+1050-this.now();if(wait>0)await this.delay(wait);
           let r;try{r=await this.rawResponse(url,{...headers,"User-Agent":agent,"Api-User-Agent":agent});}finally{this.lastWiki=this.now();}
@@ -567,26 +603,14 @@ class CatalogWidget extends MarkdownRenderChild {
       const button=controls.createEl("button",{text:this.plugin.t(label)});button.setAttribute("aria-pressed",String(this.mode===mode));
       this.renderer.registerDomEvent(button,"click",()=>{this.mode=mode;this.onModeChange?.(mode);this.refresh().catch(()=>new Notice(this.plugin.t("Не удалось открыть каталог.")));});
     }
+    sortingControls(this.plugin,bar,this.kind,this.renderer);
     const refresh=bar.createEl("button",{text:this.plugin.t("Обновить")});this.renderer.registerDomEvent(refresh,"click",()=>this.refresh());
     const basePath=this.plugin.bases[this.kind],base=this.plugin.app.vault.getAbstractFileByPath(basePath);
-    if(base?.extension==="base"&&this.mode!=="table"){const open=bar.createEl("button",{text:this.plugin.t("Открыть файл базы")});this.renderer.registerDomEvent(open,"click",()=>this.plugin.app.workspace.getLeaf(false).openFile(base));}
+    if(base?.extension==="base"){const open=bar.createEl("button",{text:this.plugin.t("Открыть файл базы")});this.renderer.registerDomEvent(open,"click",()=>this.plugin.app.workspace.getLeaf(false).openFile(base));}
     if(this.plugin.lastStatusChange){const undo=bar.createEl("button",{text:this.plugin.t("Отменить смену статуса")});this.renderer.registerDomEvent(undo,"click",async()=>{try{await this.plugin.enqueueAdd(()=>this.plugin.undoStatus());await this.refresh();}catch(e){new Notice(this.plugin.t(e.message));}});}
-    if(this.mode!=="table") {
-      c.createEl("p",{text:this.plugin.t(this.mode==="kanban"?this.plugin.t("Перетащите карточку в колонку или выберите статус в ней."):this.plugin.t("Обложки, названия, описания и выбор статуса.")),cls:"kmp-help"});
-      if(!base){const setup=bar.createEl("button",{text:this.plugin.t("Создать недостающий каталог")});this.renderer.registerDomEvent(setup,"click",async()=>{setup.disabled=true;try{await this.plugin.enqueueAdd(()=>this.plugin.createCatalog(this.kind));if(!this.closed&&seq===this.serial)await this.refresh();}catch(e){new Notice(this.plugin.t(e.message));}finally{setup.disabled=false;}});}
-      try{await this.renderCards(c,seq);}catch(e){if(!this.closed&&seq===this.serial)c.createEl("p",{text:this.plugin.t("Не удалось загрузить карточки.")});}return;
-    }
-    c.createEl("p",{text:this.plugin.t("Свойства и сортировка в штатном Bases."),cls:"kmp-help"});
-    if(!base||base.extension!=="base") {
-      c.createEl("p",{text:this.plugin.t("Файл базы пока не найден: ")+basePath+this.plugin.t(". Проверьте путь в настройках или создайте каталог.")});
-      const setup=c.createEl("button",{text:this.plugin.t("Создать недостающий каталог")});
-      this.renderer.registerDomEvent(setup,"click",async()=>{setup.disabled=true;try{await this.plugin.enqueueAdd(()=>this.plugin.createCatalog(this.kind));if(!this.closed&&seq===this.serial)await this.refresh();}catch(e){if(!this.closed)new Notice(e.message);}finally{setup.disabled=false;}});return;
-    }
-    const open=bar.createEl("button",{text:this.plugin.t("Открыть файл базы")});
-    this.renderer.registerDomEvent(open,"click",()=>this.plugin.app.workspace.getLeaf(false).openFile(base));
-    const target=c.createDiv({cls:"kmp-base markdown-rendered"});
-    try {const config=parseYaml(await this.plugin.app.vault.read(base)),view=arr(config?.views).find(v=>v.type==="table");const suffix=typeof view?.name==="string"&&!/[\[\]|\r\n]/.test(view.name)?"#"+view.name:"";await MarkdownRenderer.render(this.plugin.app,"![["+basePath+suffix+"]]",target,this.sourcePath,this.renderer);}
-    catch {if(!this.closed&&seq===this.serial)target.setText("Не удалось встроить Bases. Включите штатный плагин Bases и откройте файл базы кнопкой выше.");}
+    c.createEl("p",{text:this.plugin.t(this.mode==="kanban"?"Перетащите карточку в колонку или выберите статус в ней.":"Обложки, названия, описания и выбор статуса."),cls:"kmp-help"});
+    if(!base){const setup=bar.createEl("button",{text:this.plugin.t("Создать недостающий каталог")});this.renderer.registerDomEvent(setup,"click",async()=>{setup.disabled=true;try{await this.plugin.enqueueAdd(()=>this.plugin.createCatalog(this.kind));if(!this.closed&&seq===this.serial)await this.refresh();}catch(e){new Notice(this.plugin.t(e.message));}finally{setup.disabled=false;}});}
+    try{await this.renderCards(c,seq);}catch(e){if(!this.closed&&seq===this.serial)c.createEl("p",{text:this.plugin.t("Не удалось загрузить карточки.")});}
   }
   async renderCards(container,seq) {
     const items=[];
@@ -594,7 +618,8 @@ class CatalogWidget extends MarkdownRenderChild {
       const raw=await this.plugin.app.vault.read(file),fm=frontmatter(raw);if(fm.type===this.kind)items.push({file,fm,summary:shortDescription(raw,fm)});
     }
     if(this.closed||seq!==this.serial)return;
-    items.sort((a,b)=>String(a.fm.title||a.file.basename).localeCompare(String(b.fm.title||b.file.basename),this.plugin.locale));
+    sortItems(items,this.plugin.options.sorting[this.kind],this.plugin.locale);
+    if(this.mode==="table"){this.renderTable(container,items);return;}
     const board=container.createDiv({cls:this.mode==="kanban"?"kmp-board":"kmp-card-grid"});
     if(!items.length)container.createEl("p",{text:this.plugin.t("Карточек пока нет. Добавьте фильм или книгу.")});
     if(this.mode==="kanban") {
@@ -604,6 +629,20 @@ class CatalogWidget extends MarkdownRenderChild {
         for(const item of list)this.renderCard(column,item);if(!list.length)column.createEl("p",{text:this.plugin.t("Пусто"),cls:"kmp-help"});
       }
     }else for(const item of items)this.renderCard(board,item);
+  }
+  renderTable(container,items){
+    const table=container.createDiv({cls:"kmp-table-scroll"}).createEl("table",{cls:"kmp-table"}),head=table.createEl("thead").createEl("tr"),body=table.createEl("tbody");
+    for(const name of ["Название",this.kind==="film"?"Режиссёр":"Автор","Год","Описание","Моя оценка","Мой отзыв","Статус","Действия"])head.createEl("th",{text:this.plugin.t(name),attr:{scope:"col"}});
+    for(const item of items){const {file,fm,summary}=item,row=body.createEl("tr");
+      for(const value of [fm.title||file.basename,creatorDisplay(fm.author||fm.director),fm.year,summary,fm.rating,fm.review])row.createEl("td",{text:value==null?"":String(value)});
+      const select=row.createEl("td").createEl("select",{attr:{"aria-label":this.plugin.t("Статус")+": "+(fm.title||file.basename)}}),code=statusCode(fm.status);
+      if(code==="other")select.createEl("option",{text:text(fm.status)||this.plugin.t("Без статуса"),attr:{value:"other"}});
+      for(const status of STATUS_CODES)select.createEl("option",{text:statusLabel(this.kind,status,this.plugin.locale),attr:{value:status}});select.value=code;
+      this.renderer.registerDomEvent(select,"change",()=>this.changeStatus(item,select.value));
+      const actions=row.createEl("td").createDiv({cls:"kmp-card-actions"});
+      for(const [name,action] of [["Оценить",()=>this.plugin.openReview(file)],["Открыть заметку",()=>this.plugin.app.workspace.getLeaf("tab").openFile(file)],["В задачу",()=>this.plugin.openTaskModal(file)]]){const button=actions.createEl("button",{text:this.plugin.t(name),attr:{type:"button"}});this.renderer.registerDomEvent(button,"click",async()=>{try{await action();}catch(e){new Notice(this.plugin.t(e.message));}});}
+    }
+    if(!items.length)container.createEl("p",{text:this.plugin.t("Карточек пока нет. Добавьте фильм или книгу.")});
   }
   renderCard(container,item) {
     const {file,fm,summary}=item,card=container.createEl("article",{cls:"kmp-media-card"});card.setAttribute("draggable",String(this.mode==="kanban"));
@@ -656,7 +695,9 @@ class CatalogView extends ItemView {
   async onClose() {if(this.widget){this.removeChild(this.widget);this.widget=null;}this.contentEl.empty();}
 }
 class PickerSettings extends PluginSettingTab {
+  hide(){this.plugin.sortSettingsVisible=false;}
   display() {
+    this.plugin.sortSettingsVisible=true;
     const c=this.containerEl;c.empty();new Setting(c).setName(this.plugin.t("Источники")).setHeading();
     new Setting(c).setName(this.plugin.t("Язык интерфейса")).setDesc(this.plugin.t("Язык интерфейса и язык данных настраиваются отдельно. Перезапустите плагин после смены языка интерфейса.")).addDropdown(d=>d.addOption("auto",this.plugin.t("Автоматически")).addOption("ru","Русский").addOption("en","English").setValue(this.plugin.options.uiLanguage).onChange(async value=>{try{await this.plugin.enqueueAdd(async()=>{const next={...this.plugin.options,uiLanguage:value};await this.plugin.saveData(next);this.plugin.options=next;});}catch{new Notice(this.plugin.t("Не удалось сохранить настройки."));}}));
     new Setting(c).setName(this.plugin.t("Язык метаданных фильмов")).setDesc(this.plugin.t("Код языка, например ru-RU, en-US или de-DE. Язык издания книги берётся из источника и не переводится.")).addText(t=>{t.setValue(this.plugin.options.metadataLocale);t.inputEl.addEventListener("change",async()=>{const value=t.inputEl.value.trim();if(!/^[a-z]{2,3}-[A-Z]{2}$/.test(value)){new Notice(this.plugin.t("Неверный код языка."));return;}try{await this.plugin.enqueueAdd(async()=>{const next={...this.plugin.options,metadataLocale:value};await this.plugin.saveData(next);this.plugin.options=next;});}catch{new Notice(this.plugin.t("Не удалось сохранить настройки."));}});});
@@ -667,6 +708,8 @@ class PickerSettings extends PluginSettingTab {
     for(const [kind,label] of [["film","Кино"],["book","Книги"]]){const box=c.createDiv();box.createEl("h4",{text:this.plugin.t(label)});providerSelect(this.plugin,box,kind,this.plugin.options.providers[kind],async value=>{try{await this.plugin.enqueueAdd(async()=>{const next={...this.plugin.options,providers:{...this.plugin.options.providers,[kind]:value}};await this.plugin.saveData(next);this.plugin.options=next;});}catch{new Notice(this.plugin.t("Не удалось сохранить настройки."));}});}
     c.createEl("p",{text:this.plugin.t("Книги: сначала Читай-город, затем Open Library; Google Books доступен с ключом. Кино: Кинопоиск с ключом, TMDB и Wikidata.")});
     c.createEl("p",{text:this.plugin.t("Другие плагины Obsidian имеют доступ к среде приложения и локальному хранилищу. Ключи не записываются в data.json и не синхронизируются этим плагином.")});
+    new Setting(c).setName(this.plugin.t("Сортировка по умолчанию")).setHeading();
+    for(const kind of ["film","book"]){c.createEl("h4",{text:this.plugin.t(kind==="film"?"Кино":"Книги")});sortingControls(this.plugin,c,kind);}
     new Setting(c).setName(this.plugin.t("Каталоги")).setHeading();
     for(const [kind,label] of [["film",this.plugin.t("Кино")],["book",this.plugin.t("Книги")]]) {
       for(const [group,name,suffix] of [["folders",this.plugin.t("Папка карточек"),""],["bases",this.plugin.t("Файл базы"),".base"]]) {
@@ -715,6 +758,12 @@ class MediaPicker extends Plugin {
   async startMediaTask(path){const api=this.taskNotesApi("time.write");if(!api.hasCapability("time.read")||typeof api.time?.active!=="function"||typeof api.time?.start!=="function")throw new Error(this.t("В этой версии TaskNotes таймер недоступен."));const active=await api.time.active();if(active.some(entry=>entry.taskPath===path)){await this.openTaskNote(path);new Notice(this.t("Таймер этой задачи уже запущен."));return;}if(active.length)throw new Error(this.t("Уже идёт таймер другой задачи. Остановите его в TaskNotes перед запуском."));if(!await api.tasks.get(path))throw new Error(this.t("Файл задачи не найден."));const taskFile=this.app.vault.getAbstractFileByPath(path);if(taskFile?.extension!=="md")throw new Error(this.t("Файл задачи не найден."));await this.snapshotMetadata(taskFile,await this.app.vault.read(taskFile));await api.time.start(path,{description:this.t("Чтение / просмотр")},{source:ID,reason:"user started a media session"});await this.openTaskNote(path);new Notice(this.t("Таймер запущен."));}
   async stopMediaTask(path){const api=this.taskNotesApi("time.write");if(!api.hasCapability("time.read")||typeof api.time?.active!=="function"||typeof api.time?.stop!=="function")throw new Error(this.t("В этой версии TaskNotes таймер недоступен."));const active=await api.time.active();if(active.some(entry=>entry.taskPath===path)){const taskFile=this.app.vault.getAbstractFileByPath(path);if(taskFile?.extension!=="md")throw new Error(this.t("Файл задачи не найден."));await this.snapshotMetadata(taskFile,await this.app.vault.read(taskFile));await api.time.stop(path,{source:ID,reason:"user stopped a media session"});}new Notice(this.t("Таймер остановлен."));}
 
+  async setSorting(kind,value){
+    if(!["film","book"].includes(kind))throw new Error("Invalid catalog kind");
+    await this.enqueueAdd(async()=>{const next={...this.options,sorting:{...this.options.sorting,[kind]:sortOption(value)}};await this.saveData(next);this.options=next;});
+    await Promise.all([...this.widgets].filter(w=>w.kind===kind&&!w.closed).map(w=>w.refresh()));
+    if(this.sortSettingsVisible)this.settingsTab?.display();
+  }
   async openReview(file){
     try{
       if(file?.extension!=="md")throw new Error(this.t("Откройте карточку фильма или книги."));
@@ -802,6 +851,7 @@ class MediaPicker extends Plugin {
     const data=await this.loadData();this.options={folders:{...FOLDERS},bases:{...BASES},uiLanguage:["ru","en"].includes(data?.uiLanguage)?data.uiLanguage:"auto",metadataLocale:/^[a-z]{2,3}-[A-Z]{2}$/.test(data?.metadataLocale||"")?data.metadataLocale:defaultMetadataLocale(typeof getLanguage==="function"?getLanguage():"en")};
     if(this.locale==="en")for(const [kind,name] of [["film","Movies"],["book","Books"]])if(!this.app.vault.getAbstractFileByPath(FOLDERS[kind])&&!this.app.vault.getAbstractFileByPath(BASES[kind])){this.options.folders[kind]="Media/"+name;this.options.bases[kind]="Media/"+name+".base";}
     for(const group of ["folders","bases"])for(const kind of ["film","book"])if(data?.[group]?.[kind]){try{this.options[group][kind]=catalogPath(data[group][kind],group==="bases"?".base":"");}catch{new Notice(this.t("Некорректный путь каталога: использован путь по умолчанию."));}}
+    this.options.sorting={film:sortOption(data?.sorting?.film),book:sortOption(data?.sorting?.book)};
     this.options.providers={film:["auto","kinopoisk","tmdb","wikidata"].includes(data?.providers?.film)?data.providers.film:"auto",book:["auto","chitai","google","openlibrary"].includes(data?.providers?.book)?data.providers.book:"auto"};
     this.addTail=Promise.resolve();this.api=new Api(k=>this.key(k),requestUrl,sleep,()=>Date.now(),()=>this.options.metadataLocale);this.modals=new Set();this.widgets=new Set();
     this.registerView(VIEW,leaf=>new CatalogView(leaf,this));
@@ -814,9 +864,9 @@ class MediaPicker extends Plugin {
     this.addCommand({id:"task-from-media-note",name:this.t("Добавить открытую карточку в TaskNotes"),callback:()=>{const file=this.app.workspace.getActiveFile?.();if(file)this.openTaskModal(file);else new Notice(this.t("Откройте карточку фильма или книги."));}});
     this.addRibbonIcon("library",this.t("Кино и книги"),()=>this.openCatalog());
     this.registerMarkdownCodeBlockProcessor("media-catalog",(source,element,ctx)=>{const kind=source.trim();if(!["film","book"].includes(kind)){element.setText(this.t("Укажите film или book внутри блока media-catalog."));return;}ctx.addChild(new CatalogWidget(this,element,kind,ctx.sourcePath));});
-    this.addSettingTab(new PickerSettings(this.app,this));
+    this.settingsTab=new PickerSettings(this.app,this);this.addSettingTab(this.settingsTab);
   }
   onunload() {for(const m of this.modals||[])m.close();for(const w of this.widgets||[])w.unload();}
 }
 module.exports=MediaPicker;
-module.exports._test={ReviewModal,chitaiSearch,chitaiDetails,smallCover,localCover,TaskNotesModal,mediaWikiLink,linkedTaskPaths,validTaskDate,ScanModal,scanNotes,metadataPatch,strictFrontmatter,providerSelect,Api,SearchController,canonicalISBN,safeName,frontmatter,duplicateFiles,addCard,cardText,PickerModal,CatalogWidget,CatalogView,catalogPath,catalogFiles,baseText,FOLDERS,BASES,statusCode,statusLabel,shortDescription,translate};
+module.exports._test={sortItems,sortDate,sortNumber,sortOption,ReviewModal,chitaiSearch,chitaiDetails,smallCover,localCover,TaskNotesModal,mediaWikiLink,linkedTaskPaths,validTaskDate,ScanModal,scanNotes,metadataPatch,strictFrontmatter,providerSelect,Api,SearchController,canonicalISBN,safeName,frontmatter,duplicateFiles,addCard,cardText,PickerModal,CatalogWidget,CatalogView,catalogPath,catalogFiles,baseText,FOLDERS,BASES,statusCode,statusLabel,shortDescription,translate};

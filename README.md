@@ -17,11 +17,11 @@ A local movie and book library for Obsidian using the built-in Bases plugin. Ope
 - Duplicate detection by source IDs, movie IDs and validated ISBN-10/13. Ambiguous titles require confirmation for a different edition.
 - A `media-catalog` Markdown code block adds the same catalog and button to any note.
 
-Enable the built-in Bases plugin for Table view. Run Open movies and books (Открыть кино и книги), or use the library icon. Set Interface language to Automatic, Русский or English. Set Movie metadata language independently, for example en-US, ru-RU or de-DE; the default follows the app language where supported. Other interface languages currently use English.
+Enable the built-in Bases plugin to open native Base files. The catalog table itself does not require Bases. Run Open movies and books (Открыть кино и книги), or use the library icon. Set Interface language to Automatic, Русский or English. Set Movie metadata language independently, for example en-US, ru-RU or de-DE; the default follows the app language where supported. Other interface languages currently use English.
 
 Configure the note folders and Base files before adding items. Paths are relative to the vault; changing a path does not move existing data. Existing Areas/Личное catalogs are retained. New English-interface vaults default to Media/Movies and Media/Books.
 
-Cards and Kanban show movie/book notes in the configured folders; they do not evaluate custom native Base filters. Table embeds the existing native table view by its name, retaining its filters, properties and sorting. Existing Base files are not rewritten or translated. Newly created Bases have localized Cards, Table and status views. Use Open Base file to edit the original native catalog directly.
+Cards, Table and Kanban show movie/book notes in the configured folders using shared sorting; they do not evaluate custom native Base filters. The separate Open Base file button retains access to native filters, properties and sorting. Existing Base files are not rewritten or translated. Newly created Bases have localized Cards, Table and status views. Use Open Base file to edit the original native catalog directly.
 
 The five status groups are Planned, Watching/Reading, Watched/Read, On hold and Dropped. Unknown custom statuses are kept in Other statuses. Existing Russian and English status values are recognized without bulk migration. New catalogs use stable status codes; old Russian Base filters retain compatible Russian values when adding or moving cards. Changing status changes only the status field; dates and personal ratings remain manual.
 
@@ -103,8 +103,14 @@ Live source checks: node scripts/check-live.cjs and node scripts/check-live-film
 
 Use **Rate** from the command palette with an open film/book note (desktop or mobile), or the **Rate** button on a catalog card or Kanban item. Choose an integer from 1 to 10 or Not rated, enter a single-line review, and save. The plugin updates only `rating` and `review` through `FileManager.processFrontMatter`; stale personal edits are rejected. Both fields appear on catalog cards and remain protected during metadata filling. New Base templates include My review in every view with My rating; existing bases are left for their owner to update.
 
-The installation archive is `ksandr-media-picker-0.7.1.zip` and contains only `ksandr-media-picker/` with `main.js`, `manifest.json`, and `styles.css`. `INSTALL-0.7.1.md` is distributed separately beside it. Keep the installed `data.json` when replacing the three plugin files.
+The installation archive is `ksandr-media-picker-0.8.0.zip` and contains only `ksandr-media-picker/` with `main.js`, `manifest.json`, and `styles.css`. `INSTALL-0.8.0.md` is distributed separately beside it. Keep the installed `data.json` when replacing the three plugin files.
 
 ## Catalog layout fixes in 0.7.1
 
 Card actions share a wrapping flex container with equal button heights and gaps. The rating, actions and status sit in a bottom-aligned footer. Creator names display wiki-link labels (including aliases) in cards and Kanban without changing note properties.
+
+## Shared sorting in 0.8.0
+
+The catalog window and `media-catalog` blocks share per-kind sorting preferences stored in plugin settings: Current first (default), Recently added, My rating, Title and Release year. Reverse direction with the adjacent button; missing and invalid values stay last. Current first groups in-progress, planned, on-hold, completed, dropped, other and missing statuses, then sorts by started/finished with added as fallback, and finally title. Missing dates stay last within their status group. Kanban columns retain their order while their items are sorted.
+
+Table mode now renders a plugin-owned table using the same comparator, status controls and action buttons. Open Base still opens the original Base with its own views and sorting; no existing Base files are modified. Sort choices and directions are also available in the Default sorting settings section and update all open widgets of that media kind.
