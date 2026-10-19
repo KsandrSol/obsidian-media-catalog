@@ -46,7 +46,11 @@ async function execute(command,input,options={}){
  const atomic=vault.atomic;vault.atomic=(...args)=>{lease.assert();return atomic(...args);};
  try{
   const personal=personalPatch(T,input.kind,input.personal),folders={...T.FOLDERS},app={vault};let rec;
-  if(input.candidate){const c=input.candidate;if(c.kind!==input.kind||!['chitai','openlibrary','google','wikidata','kinopoisk','tmdb'].includes(c.source)||!/^[-\w:/]+$/.test(String(c.id)))throw new CliError('invalid_input', 'Invalid candidate');try{rec=await api.details(c);}catch{if(command==='replace')throw new CliError('network', 'Candidate unavailable; original kept');notices.push('Метаданные недоступны; сохранена незаполненная карточка.');}}
+  let selected=null;
+  const candidates=command==='replace'?(input.candidate?[input.candidate]:[]):(input.candidates??(input.candidate?[input.candidate]:[]));
+  if(!Array.isArray(candidates)||candidates.some(c=>!c||c.kind!==input.kind||!['chitai','openlibrary','google','wikidata','kinopoisk','tmdb'].includes(c.source)||!/^[-\w:/]+$/.test(String(c.id))))throw new CliError('invalid_input', 'Invalid candidates');
+  for(const c of candidates){try{rec=await api.details(c);selected=c;break;}catch{}}
+  if(candidates.length&&!rec){if(command==='replace')throw new CliError('network', 'Candidate unavailable; original kept');notices.push('Метаданные недоступны; сохранена незаполненная карточка.');}
   if(!rec){const title=line(input.title);if(!title)throw new CliError('invalid_input', 'Title required');rec={kind:input.kind,source:'manual',source_id:digest(JSON.stringify([input.kind,titleKey(title),input.year||'',input.author||''])).slice(0,20),description:'',fields:{title,year:T.sortNumber(input.year,'year'),...(input.kind==='book'?{author:line(input.author)?[line(input.author)]:[]}:{}),source_url:''}};}
   const found=await T.duplicateFiles(app,rec,folders);let existing=found.matches[0];
   if(!existing)existing=found.similar.find(f=>{const fm=T.frontmatter(fs.readFileSync(vault.resolve(f.path),'utf8'));return (!rec.fields.year||!fm.year||String(fm.year)===String(rec.fields.year))&&(input.kind!=='book'||!line(input.author)||!fm.author||titleKey(String(fm.author).replace(/\[\[|\]\]/g,'')).includes(titleKey(input.author)));});
@@ -65,7 +69,7 @@ async function execute(command,input,options={}){
     const base=T.safeName(rec.fields.title)+(input.kind==='film'&&rec.fields.year?' ('+rec.fields.year+')':'');let name=folders[input.kind]+'/'+base+'.md';if(vault.getAbstractFileByPath(name))name=folders[input.kind]+'/'+base+' — '+rec.source_id.replace(/[^\w-]/g,'').slice(-12)+'.md';
     const raw=T.cardText(rec),patch={...provenance({},input),...personal};file=await vault.create(name,patchText(raw,patch));
   }
-  const raw=await vault.read(file),fm=T.frontmatter(raw);return {path:file.path,title:line(fm.title)||file.basename,year:fm.year,status:line(fm.status)||'без статуса',existing:wasExisting,hash:digest(raw),warnings:notices,previous_kept:command==='replace'&&file!==old?old.path:null};
+  const raw=await vault.read(file),fm=T.frontmatter(raw);return {candidate:selected,path:file.path,title:line(fm.title)||file.basename,year:fm.year,status:line(fm.status)||'без статуса',existing:wasExisting,hash:digest(raw),warnings:notices,previous_kept:command==='replace'&&file!==old?old.path:null};
  }finally{lease.release();}
 }
 module.exports={execute,diskVault,patchText,acquireLock,lockPath,errorResult,CliError};

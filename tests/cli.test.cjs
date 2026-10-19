@@ -61,3 +61,19 @@ test('CLI executable emits safe JSON and concurrent add processes create one car
 test('duplicate legacy card with no status is returned without changing it',async t=>{
  const vault=temporary(t),input={vault,kind:'book',title:'Илиада'},a=await execute('add',input,options),file=path.join(vault,a.path);const raw=fs.readFileSync(file,'utf8').replace(/^status:.*\n/m,'');fs.writeFileSync(file,raw);const b=await execute('add',input,options);assert.equal(b.existing,true);assert.equal(b.status,'без статуса');assert.equal(fs.readFileSync(file,'utf8'),raw);
 });
+
+test('add tries Chitai details in order, skips wrong-page failures and stops on success',async t=>{
+ const vault=temporary(t),seen=[];
+ const candidates=['1000001','1813154','1000003'].map((id,i)=>({kind:'book',source:'chitai',id,path:'/product/onegin-'+id,title:i===0?'Евгений Онегин. Графический роман':'Евгений Онегин'}));
+ const transport=async r=>{seen.push(r.url);const good=r.url.endsWith('1813154');return {status:200,text:'<script type="application/ld+json">'+JSON.stringify({'@type':'Book',url:good?r.url:'https://www.chitai-gorod.ru/product/other-9999999',name:good?'Евгений Онегин':'Другая книга',author:{name:'Александр Пушкин'},numberOfPages:224})+'</script>'};};
+ const result=await execute('add',{vault,kind:'book',title:'Евгений Онегин',candidates},{...options,transport});
+ assert.equal(result.candidate.id,'1813154');assert.equal(seen.length,2);assert.ok(seen[0].endsWith('1000001'));assert.ok(seen[1].endsWith('1813154'));
+ const fields=fm(vault,result.path);assert.equal(String(fields.source_id),'1813154');assert.equal(fields.pages,224);assert.equal(result.warnings.length,0);
+});
+test('add falls back only after every candidate fails and validates the list',async t=>{
+ const vault=temporary(t),seen=[],candidates=['1000001','1813154'].map(id=>({kind:'book',source:'chitai',id,path:'/product/onegin-'+id}));
+ const transport=async r=>{seen.push(r.url);return {status:200,text:'<html>Изменившаяся разметка</html>'};};
+ const result=await execute('add',{vault,kind:'book',title:'Евгений Онегин',candidates},{...options,transport});
+ assert.equal(seen.length,2);assert.equal(result.candidate,null);assert.equal(fm(vault,result.path).source,'manual');assert.equal(result.warnings.length,1);
+ for(const bad of [{},[null],[{kind:'film',source:'chitai',id:'1'}]])await assert.rejects(execute('add',{vault,kind:'book',title:'Книга',candidates:bad},options),e=>e.code==='invalid_input');
+});
