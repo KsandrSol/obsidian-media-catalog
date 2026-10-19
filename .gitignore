@@ -4,3 +4,7 @@ node_modules/
 CHECKS.txt
 SHA256SUMS
 RELEASE.md
+
+checks/
+scripts/__pycache__/
+SHA256SUMS*
