@@ -109,12 +109,30 @@ class Api {
     this.chitaiTail=Promise.resolve();this.lastChitai=-Infinity;this.keys=keys; this.transport=transport; this.delay=delay; this.now=now; this.metadataLocale=metadataLocale;this.olTail=Promise.resolve(); this.lastOL=-Infinity;this.wikiTail=Promise.resolve();this.lastWiki=-Infinity;this.cache=new Map();
   }
   async response(url, headers={}) {
+    const host=new URL(url).hostname;
+    if(host==="wikidata.org"||host.endsWith(".wikidata.org")||host.endsWith(".wikipedia.org")||host.endsWith(".wikimedia.org")) {
+      const job=this.wikiTail.then(async()=>{
+        const agent="MediaCatalog/0.6.0 (https://github.com/KsandrSol/obsidian-media-catalog)";
+        for(let attempt=0;attempt<4;attempt++){
+          const wait=this.lastWiki+1050-this.now();if(wait>0)await this.delay(wait);
+          let r;try{r=await this.rawResponse(url,{...headers,"User-Agent":agent,"Api-User-Agent":agent});}finally{this.lastWiki=this.now();}
+          if(r.status!==429||attempt===3){if(r.status<200||r.status>=300)throw new Error(errorText(r.status));return r;}
+          const value=Object.entries(r.headers||{}).find(([k])=>k.toLowerCase()==="retry-after")?.[1];
+          const seconds=/^\d+(?:\.\d+)?$/.test(String(value))?Number(value)*1000:Date.parse(value)-this.now();
+          await this.delay(Number.isFinite(seconds)?Math.max(1050,seconds):5000*2**attempt);
+        }
+      });
+      this.wikiTail=job.catch(()=>{});return job;
+    }
+    const r=await this.rawResponse(url,headers);
+    if(r.status<200||r.status>=300)throw new Error(errorText(r.status));return r;
+  }
+  async rawResponse(url, headers={}) {
     let r, timer;
     try {
       r=await Promise.race([this.transport({url,headers,throw:false}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error("timeout")),20000);})]);
     } catch { throw new Error("Ошибка сети, TLS или превышено время ожидания. Проверьте подключение на этом устройстве."); }
     finally {clearTimeout(timer);}
-    if (r.status<200 || r.status>=300) throw new Error(errorText(r.status));
     return r;
   }
   async json(url,headers={}) {
@@ -125,7 +143,7 @@ class Api {
   }
   chitai(url){const job=this.chitaiTail.then(async()=>{const wait=this.lastChitai+1050-this.now();if(wait>0)await this.delay(wait);try{return await this.response(url,{"User-Agent":"Mozilla/5.0"});}finally{this.lastChitai=this.now();}});this.chitaiTail=job.catch(()=>{});return job;}
   kinopoisk(path,params={}){const token=text(this.keys("kinopoisk"));if(!token)throw new Error("Укажите ключ Кинопоиска в настройках плагина.");return this.json("https://kinopoiskapiunofficial.tech/api/"+path+"?"+new URLSearchParams(params),{"X-API-KEY":token});}
-  async cover(url){
+  async cover(url,allowWikiResize=true){
     const host=new URL(url).hostname,isChitai=host==="img-gorod.ru"||host.endsWith(".img-gorod.ru");
     for(const [width,height] of isChitai?[[304,438],[240,346],[160,231]]:[[304,438]]){
       const target=smallCover(url,width,height),r=isChitai?await this.chitai(target):await this.response(target),b=new Uint8Array(r.arrayBuffer);
@@ -139,6 +157,17 @@ class Api {
       const extension=b[0]===255&&b[1]===216&&b[2]===255?"jpg":b[0]===137&&b[1]===80&&b[2]===78&&b[3]===71?"png":tag(0)==="RIFF"&&tag(8)==="WEBP"?"webp":avif?"avif":null;
       if(!extension)throw new Error("Источник вернул не изображение обложки.");
       if(b.length<=150*1024)return {data:r.arrayBuffer,extension};
+      if(["upload.wikimedia.org","thumb.wikimedia.org"].includes(host)&&allowWikiResize){
+        const parts=new URL(url).pathname.split("/"),lang=parts[2],file=parts[3]==="thumb"?parts.at(-2):parts.at(-1);
+        const origin=lang==="commons"?"commons.wikimedia.org":/^[a-z]{2,3}$/.test(lang)?lang+".wikipedia.org":null;
+        if(parts[1]==="wikipedia"&&origin){
+          for(const width of [200,120]){
+            const data=await this.json("https://"+origin+"/w/api.php?"+new URLSearchParams({action:"query",format:"json",prop:"imageinfo",titles:"File:"+decodeURIComponent(file),iiprop:"url",iiurlwidth:String(width)}));
+            const thumbnail=Object.values(data.query?.pages||{}).map(p=>validURL(p.imageinfo?.[0]?.thumburl)).find(u=>u&&["upload.wikimedia.org","thumb.wikimedia.org"].includes(new URL(u).hostname));
+            if(thumbnail){try{return await this.cover(thumbnail,false);}catch(e){if(!e.message.startsWith("Обложка больше"))throw e;}}
+          }
+        }
+      }
     }throw new Error("Обложка больше 150 КБ. Выберите другое издание или источник.");
   }
   ol(path, params={}) {
@@ -158,7 +187,8 @@ class Api {
     return this.json("https://www.googleapis.com/books/v1/"+path+"?"+new URLSearchParams({...params,key}));
   }
   async wiki(params) {
-    const job=this.wikiTail.then(async()=>{const wait=this.lastWiki+1050-this.now();if(wait>0)await this.delay(wait);try{const data=await this.json("https://www.wikidata.org/w/api.php?"+new URLSearchParams({format:"json",...params}));if(data.error)throw new Error("Источник временно недоступен.");return data;}finally{this.lastWiki=this.now();}});this.wikiTail=job.catch(()=>{});return job;
+    const data=await this.json("https://www.wikidata.org/w/api.php?"+new URLSearchParams({format:"json",...params}));
+    if(data.error)throw new Error("Источник временно недоступен.");return data;
   }
   async entities(ids,props="labels|descriptions|claims") {if(!ids.length)return {};return (await this.wiki({action:"wbgetentities",ids:ids.join("|"),props,languages:this.metadataLocale().split("-")[0]+"|en",languagefallback:"1"})).entities||{};}
   wikiLabel(entity,field="labels") {const values=entity?.[field]||{};return text(values[this.metadataLocale().split("-")[0]]?.value||values.en?.value||Object.values(values)[0]?.value);}
@@ -221,8 +251,8 @@ class Api {
   async wikiCover(entity) {
     const languages=[...new Set([this.metadataLocale().split("-")[0],"en"])];
     for(const lang of languages){if(!/^[a-z]{2,3}$/.test(lang))continue;const title=text(entity.sitelinks?.[lang+"wiki"]?.title);if(!title)continue;
-      try{const data=await this.json("https://"+lang+".wikipedia.org/w/api.php?"+new URLSearchParams({action:"query",format:"json",prop:"pageimages|pageprops",titles:title,piprop:"thumbnail",pithumbsize:"500",pilicense:"any",redirects:"1"}));
-        for(const page of Object.values(data.query?.pages||{})){const cover=validURL(page.thumbnail?.source);if(page.pageprops?.wikibase_item===entity.id&&cover&&new URL(cover).hostname==="upload.wikimedia.org")return {cover,cover_source:"https://"+lang+".wikipedia.org/wiki/"+encodeURIComponent(page.title.replace(/ /g,"_"))};}
+      try{const data=await this.json("https://"+lang+".wikipedia.org/w/api.php?"+new URLSearchParams({action:"query",format:"json",prop:"pageimages|pageprops",titles:title,piprop:"thumbnail",pithumbsize:"300",pilicense:"any",redirects:"1"}));
+        for(const page of Object.values(data.query?.pages||{})){const cover=validURL(page.thumbnail?.source);if(page.pageprops?.wikibase_item===entity.id&&cover&&["upload.wikimedia.org","thumb.wikimedia.org"].includes(new URL(cover).hostname))return {cover,cover_source:"https://"+lang+".wikipedia.org/wiki/"+encodeURIComponent(page.title.replace(/ /g,"_"))};}
       }catch{} // Image failure must not discard usable film metadata.
     }
     return {};

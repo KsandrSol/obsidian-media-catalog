@@ -303,3 +303,42 @@ test('Новая версия: AVIF returned from a jpg URL is accepted and save
  const result=await e.T.addCard(f.app,rec,false,{book:'Books',film:'Films'},'ru','planned',api),cover=e.T.frontmatter(f.content.get(result.created.path)).cover;
  assert.equal(cover,'[[Books/Обложки/chitai-3172593.avif]]');assert.deepEqual(Buffer.from(f.content.get('Books/Обложки/chitai-3172593.avif')),bytes);assert.equal(e.notices.length,0);
 });
+
+test('Мстители (2012): Wikimedia 429 respects Retry-After and identifies the client',async()=>{
+ const e=environment(),requests=[],waits=[];let now=Date.UTC(2026,9,19),attempt=0;
+ const entity=wikiFilm('Q182218');entity.labels.ru.value='Мстители';entity.claims.P577=[claim({time:'+2012-01-01T00:00:00Z'})];
+ const base=wikiTransport(requests,entity),api=new e.T.Api(()=>'',async request=>{
+  assert.match(request.headers['User-Agent'],/^MediaCatalog\/0\.6\.0 \(https:\/\/github.com\/KsandrSol\/obsidian-media-catalog\)$/);
+  assert.equal(request.headers['Api-User-Agent'],request.headers['User-Agent']);
+  if(attempt++===0)return {status:429,headers:{'Retry-After':'3'}};
+  if(attempt===2)return {status:429,headers:{'retry-after':new Date(now+6000).toUTCString()}};
+  return base(request);
+ },async ms=>{waits.push(ms);now+=ms;},()=>now);
+ const card=yaml.parse('title: Мстители\nyear: 2012\n'),found=await api.search('film',card.title,String(card.year),'wikidata');
+ assert.equal(found.items[0].id,'Q182218');assert.equal(waits[0],3000);assert.equal(waits[1],6000);
+});
+test('Брат (1997): persistent Wikidata 429 stops after bounded retries',async()=>{
+ const e=environment();let count=0,now=0;const waits=[];
+ const api=new e.T.Api(()=>'',async()=>{count++;return {status:429,headers:{}};},async ms=>{waits.push(ms);now+=ms;},()=>now);
+ const card=yaml.parse('title: Брат\nyear: 1997\n'),found=await api.search('film',card.title,String(card.year),'wikidata');
+ assert.equal(count,4);assert.deepEqual(waits,[5000,10000,20000]);assert.equal(found.items.length,0);assert.ok(found.warnings.length);
+});
+test('Матрица (1999): Wikipedia requests a 300px thumbnail instead of the oversized cover',async()=>{
+ const e=environment(),card=yaml.parse('title: Матрица\nyear: 1999\n'),entity=wikiFilm('Q83495');entity.sitelinks={ruwiki:{title:card.title}};
+ const api=new e.T.Api(()=>'',async request=>{
+  const u=new URL(request.url);assert.equal(u.searchParams.get('pithumbsize'),'300');assert.match(request.headers['User-Agent'],/MediaCatalog/);
+  return {status:200,json:{query:{pages:{1:{title:card.title,pageprops:{wikibase_item:entity.id},thumbnail:{source:'https://upload.wikimedia.org/300px-Matrix.jpg'}}}}}};
+ },async()=>{});
+ assert.equal((await api.wikiCover(entity)).cover,'https://upload.wikimedia.org/300px-Matrix.jpg');
+});
+
+test('Матрица (1999): 260px original PNG exceeds 150KB and uses Imageinfo thumbnail',async()=>{
+ const e=environment(),raw=new Uint8Array(252291);raw.set([137,80,78,71]);const small=new Uint8Array([137,80,78,71,1]);
+ const card=yaml.parse('title: Матрица\nyear: 1999\ncover: https://upload.wikimedia.org/wikipedia/en/d/db/The_Matrix.png\n');
+ const api=new e.T.Api(()=>'',async({url})=>{
+  if(url===card.cover)return {status:200,arrayBuffer:raw.buffer};
+  if(url.includes('/w/api.php')){const u=new URL(url);assert.equal(u.searchParams.get('titles'),'File:The_Matrix.png');assert.equal(u.searchParams.get('iiurlwidth'),'200');return {status:200,json:{query:{pages:{1:{imageinfo:[{thumburl:'https://thumb.wikimedia.org/small.png'}]}}}}};}
+  assert.equal(url,'https://thumb.wikimedia.org/small.png');return {status:200,arrayBuffer:small.buffer};
+ },async()=>{});
+ assert.equal((await api.cover(card.cover)).data.byteLength,5);
+});

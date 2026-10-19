@@ -3,13 +3,17 @@
 const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path'),{execFile}=require('node:child_process'),{promisify}=require('node:util'),yaml=require('yaml');
 const root=path.resolve(__dirname,'..'),calls=[];
 fs.mkdirSync(path.join(root,'checks'),{recursive:true});
+let requestId=0;
 async function transport({url,headers={}}){
- const args=['--location','--silent','--show-error','--max-time','25','--write-out','\n%{http_code} %{content_type}'];
+ const headerPath=path.join(root,'checks','response-headers-'+(++requestId)+'.txt');
+ const args=['--dump-header',headerPath,'--location','--silent','--show-error','--max-time','25','--write-out','\n%{http_code} %{content_type}'];
  for(const [name,value] of Object.entries(headers))args.push('-H',name+': '+value);
  args.push(url);const {stdout}=await promisify(execFile)('curl',args,{encoding:'buffer',maxBuffer:8*1024*1024}),cut=stdout.lastIndexOf(10),data=stdout.subarray(0,cut),trailer=stdout.subarray(cut+1).toString(),status=Number(trailer.split(' ')[0]),contentType=trailer.slice(trailer.indexOf(' ')+1);
- calls.push({url,status,contentType,bytes:data.length,signature:data.subarray(0,32).toString('hex'),at:new Date().toISOString()});
+ const blocks=fs.readFileSync(headerPath,'utf8').trim().split(/\r?\n\r?\n/),responseHeaders={};
+ for(const line of blocks.at(-1).split(/\r?\n/).slice(1)){const i=line.indexOf(':');if(i>0)responseHeaders[line.slice(0,i).toLowerCase()]=line.slice(i+1).trim();}
+ calls.push({url,status,contentType,retryAfter:responseHeaders['retry-after'],userAgent:headers['User-Agent'],bytes:data.length,signature:data.subarray(0,32).toString('hex'),at:new Date().toISOString()});
  if(new URL(url).hostname.endsWith('.img-gorod.ru'))fs.writeFileSync(path.join(root,'checks','cover-response-'+(calls.length)+'.bin'),data);
- return {status,headers:{'content-type':contentType},text:data.toString(),get json(){return JSON.parse(data.toString());},arrayBuffer:data.buffer.slice(data.byteOffset,data.byteOffset+data.byteLength)};
+ return {status,headers:responseHeaders,text:data.toString(),get json(){return JSON.parse(data.toString());},arrayBuffer:data.buffer.slice(data.byteOffset,data.byteOffset+data.byteLength)};
 }
 class Stub {}
 const obsidian={Plugin:Stub,Modal:Stub,ItemView:Stub,Component:Stub,MarkdownRenderChild:Stub,PluginSettingTab:Stub,parseYaml:yaml.parse,stringifyYaml:yaml.stringify,normalizePath:v=>v,requestUrl:transport};
@@ -44,5 +48,5 @@ async function main(){
  if(results.some(r=>r.coverWarning))process.exitCode=1;
  fs.writeFileSync(path.join(root,'checks/plugin-live-books.json'),JSON.stringify({at:new Date().toISOString(),results,calls},null,2)+'\n');
 }
-module.exports={T,api,transport,calls,root};
+module.exports={T,api,transport,calls,root,diskVault};
 if(require.main===module)main().catch(e=>{fs.writeFileSync(path.join(root,'checks/plugin-live-error.json'),JSON.stringify({error:e.message,calls},null,2));console.error(e.message);process.exitCode=1;});
