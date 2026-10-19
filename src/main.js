@@ -72,8 +72,8 @@ function catalogFiles(app,folder) {
 }
 function baseText(kind,folder,locale="ru") {
   const creator=kind==="film"?"director":"author";
-  const tr=v=>translate(v,locale),order=["file.name",creator,"year","summary","status","rating","review"],cards={type:"cards",name:tr("Карточки"),order,image:"note.cover",imageFit:"contain",imageAspectRatio:0.67};
-  return stringifyYaml({filters:{and:["file.inFolder("+JSON.stringify(folder)+")","type == "+JSON.stringify(kind)]},properties:{title:{displayName:tr("Название")},status:{displayName:tr("Статус")},rating:{displayName:tr("Моя оценка")},review:{displayName:tr("Мой отзыв")},[creator]:{displayName:tr(kind==="film"?"Режиссёр":"Автор")},year:{displayName:tr("Год")},summary:{displayName:tr("Описание")}},views:[cards,{type:"table",name:tr("Таблица"),order,sort:[{property:"title",direction:"ASC"}]},...STATUS_CODES.map(code=>({...cards,name:statusLabel(kind,code,locale),filters:STATUS_ALIASES[code].map(s=>"status == "+JSON.stringify(s)).join(" || ")}))]});
+  const tr=v=>translate(v,locale),order=["file.name",creator,"year","summary","status","rating","review","found_via","collections"],cards={type:"cards",name:tr("Карточки"),order,image:"note.cover",imageFit:"contain",imageAspectRatio:0.67};
+  return stringifyYaml({filters:{and:["file.inFolder("+JSON.stringify(folder)+")","type == "+JSON.stringify(kind)]},properties:{title:{displayName:tr("Название")},status:{displayName:tr("Статус")},rating:{displayName:tr("Моя оценка")},review:{displayName:tr("Мой отзыв")},found_via:{displayName:tr("Откуда узнал")},collections:{displayName:tr("Подборки")},[creator]:{displayName:tr(kind==="film"?"Режиссёр":"Автор")},year:{displayName:tr("Год")},summary:{displayName:tr("Описание")}},views:[cards,{type:"table",name:tr("Таблица"),order,sort:[{property:"title",direction:"ASC"}]},...STATUS_CODES.map(code=>({...cards,name:statusLabel(kind,code,locale),filters:STATUS_ALIASES[code].map(s=>"status == "+JSON.stringify(s)).join(" || ")}))]});
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const text = v => typeof v === "string" ? v.trim() : "";
@@ -151,7 +151,7 @@ class Api {
     const host=new URL(url).hostname;
     if(host==="wikidata.org"||host.endsWith(".wikidata.org")||host.endsWith(".wikipedia.org")||host.endsWith(".wikimedia.org")) {
       const job=this.wikiTail.then(async()=>{
-        const agent="MediaCatalog/0.8.0 (https://github.com/KsandrSol/obsidian-media-catalog)";
+        const agent="MediaCatalog/0.9.0 (https://github.com/KsandrSol/obsidian-media-catalog)";
         for(let attempt=0;attempt<4;attempt++){
           const wait=this.lastWiki+1050-this.now();if(wait>0)await this.delay(wait);
           let r;try{r=await this.rawResponse(url,{...headers,"User-Agent":agent,"Api-User-Agent":agent});}finally{this.lastWiki=this.now();}
@@ -370,7 +370,7 @@ async function duplicateFiles(app, rec, folders=FOLDERS) {
 }
 function cardText(rec,locale="ru",initialStatus="planned") {
   const f=rec.fields;if(statusCode(initialStatus)==="other")throw new Error("Неизвестный статус каталога.");
-  const fm={...f,type:rec.kind,status:statusLabel(rec.kind,statusCode(initialStatus),"ru").toLowerCase(),summary:cleanTitle((rec.description||"").replace(/\s+/g," ")).slice(0,280),rating:null,review:"",started:null,finished:null,added:isoDate(),source:rec.source,source_id:rec.source_id,tags:[rec.kind==="film"?"кино":"книга"]};
+  const fm={...f,type:rec.kind,status:statusLabel(rec.kind,statusCode(initialStatus),"ru").toLowerCase(),summary:cleanTitle((rec.description||"").replace(/\s+/g," ")).slice(0,280),rating:null,review:"",found_via:"",collections:[],started:null,finished:null,added:isoDate(),source:rec.source,source_id:rec.source_id,tags:[rec.kind==="film"?"кино":"книга"]};
   if(rec.kind==="book") { fm.original_title=null;fm.highlights=null;fm.isbn=arr(f.isbn).map(String); }
   const heading=translate(rec.kind==="film"?"О чём":"О книге",locale);
   return "---\n"+stringifyYaml(fm).trimEnd()+"\n---\n\n# "+f.title+"\n\n## "+heading+"\n\n"+(rec.description||"")+"\n\n## "+translate(rec.kind==="film"?"Мой отзыв":"Мои мысли",locale)+"\n\n## "+translate("Источник метаданных",locale)+"\n\n"+f.source_url+"\n\n";
@@ -869,4 +869,4 @@ class MediaPicker extends Plugin {
   onunload() {for(const m of this.modals||[])m.close();for(const w of this.widgets||[])w.unload();}
 }
 module.exports=MediaPicker;
-module.exports._test={sortItems,sortDate,sortNumber,sortOption,ReviewModal,chitaiSearch,chitaiDetails,smallCover,localCover,TaskNotesModal,mediaWikiLink,linkedTaskPaths,validTaskDate,ScanModal,scanNotes,metadataPatch,strictFrontmatter,providerSelect,Api,SearchController,canonicalISBN,safeName,frontmatter,duplicateFiles,addCard,cardText,PickerModal,CatalogWidget,CatalogView,catalogPath,catalogFiles,baseText,FOLDERS,BASES,statusCode,statusLabel,shortDescription,translate};
+module.exports._test={ensureFolder,sortItems,sortDate,sortNumber,sortOption,ReviewModal,chitaiSearch,chitaiDetails,smallCover,localCover,TaskNotesModal,mediaWikiLink,linkedTaskPaths,validTaskDate,ScanModal,scanNotes,metadataPatch,strictFrontmatter,providerSelect,Api,SearchController,canonicalISBN,safeName,frontmatter,duplicateFiles,addCard,cardText,PickerModal,CatalogWidget,CatalogView,catalogPath,catalogFiles,baseText,FOLDERS,BASES,statusCode,statusLabel,shortDescription,translate};

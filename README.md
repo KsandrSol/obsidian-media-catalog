@@ -103,7 +103,7 @@ Live source checks: node scripts/check-live.cjs and node scripts/check-live-film
 
 Use **Rate** from the command palette with an open film/book note (desktop or mobile), or the **Rate** button on a catalog card or Kanban item. Choose an integer from 1 to 10 or Not rated, enter a single-line review, and save. The plugin updates only `rating` and `review` through `FileManager.processFrontMatter`; stale personal edits are rejected. Both fields appear on catalog cards and remain protected during metadata filling. New Base templates include My review in every view with My rating; existing bases are left for their owner to update.
 
-The installation archive is `ksandr-media-picker-0.8.0.zip` and contains only `ksandr-media-picker/` with `main.js`, `manifest.json`, and `styles.css`. `INSTALL-0.8.0.md` is distributed separately beside it. Keep the installed `data.json` when replacing the three plugin files.
+The installation archive is `ksandr-media-picker-0.9.0.zip` and contains only `ksandr-media-picker/` with `main.js`, `manifest.json`, and `styles.css`. `INSTALL-0.9.0.md` is distributed separately beside it. Keep the installed `data.json` when replacing the three plugin files.
 
 ## Catalog layout fixes in 0.7.1
 
@@ -114,3 +114,18 @@ Card actions share a wrapping flex container with equal button heights and gaps.
 The catalog window and `media-catalog` blocks share per-kind sorting preferences stored in plugin settings: Current first (default), Recently added, My rating, Title and Release year. Reverse direction with the adjacent button; missing and invalid values stay last. Current first groups in-progress, planned, on-hold, completed, dropped, other and missing statuses, then sorts by started/finished with added as fallback, and finally title. Missing dates stay last within their status group. Kanban columns retain their order while their items are sorted.
 
 Table mode now renders a plugin-owned table using the same comparator, status controls and action buttons. Open Base still opens the original Base with its own views and sorting; no existing Base files are modified. Sort choices and directions are also available in the Default sorting settings section and update all open widgets of that media kind.
+
+## Provenance and server CLI in 0.9.0
+
+`found_via` (Found via) and `collections` (Collections) are personal fields, included in new card/Base templates and excluded from metadata filling. Existing Base files are never migrated automatically.
+
+The Node CLI in `scripts/catalog-cli.cjs` loads the actual plugin source through `catalog-runtime.cjs`; it reuses Api, cardText, duplicateFiles and localCover. It is a server adapter, not bundled into the Obsidian ZIP. Use Node and curl with the repository's existing yaml dependency installed. Send JSON on stdin; stdout is one JSON response. Credentials are read from `~/.config/obsidian-media/env` (`KINOPOISK_API_KEY`); credential values and raw exceptions are never printed or passed in curl command-line arguments.
+
+- `node scripts/catalog-cli.cjs search`: input `{ "kind": "film", "title": "Матрица", "year": 1999 }`; returns candidates. Books also accept `author`. Search does not require or write a vault.
+- `node scripts/catalog-cli.cjs add`: input includes an explicit absolute `vault`, kind, title/year/author, optional candidate from search, `found_via`, and a `collections` array of wiki-links. Without a candidate it creates a planned card for later scanner enrichment. A duplicate returns the existing path, appends collection links and fills only empty provenance.
+- `personal` is an explicit owner-action payload, allowing status, rating, single-line review, started and finished; never populate it from source opinions. These values are otherwise preserved.
+- `replace` additionally requires the original relative `path` and its returned `hash` in `expected`; it is only for an explicitly chosen alternative. It preserves personal fields, note body and path. If the selected card already exists, it returns that card and reports `previous_kept`; no card is deleted.
+
+New files are atomically published without clobbering existing files. Updates compare the original contents before atomic replacement. Symbolic links in catalog paths are rejected. CLI processes serialize per vault using a lock outside the vault, in the OS temporary directory: dead PIDs or locks older than two minutes are recovered; live operations heartbeat every 20 seconds. Error codes are limited to `invalid_input`, `busy`, `card_changed`, `not_found`, `network`, `write_failed`; error text is fixed and does not contain plugin or subprocess exceptions. Checksums and ZIP are distributed separately from this source repository.
+
+Tests: `node --test tests/cli.test.cjs` uses temporary vaults and mocked transport. `scripts/check-cli-search.cjs` replays read-only searches from the local acceptance reports in ignored `checks/`; no vault writes are performed.

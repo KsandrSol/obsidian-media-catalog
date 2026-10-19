@@ -308,7 +308,7 @@ test('Мстители (2012): Wikimedia 429 respects Retry-After and identifies
  const e=environment(),requests=[],waits=[];let now=Date.UTC(2026,9,19),attempt=0;
  const entity=wikiFilm('Q182218');entity.labels.ru.value='Мстители';entity.claims.P577=[claim({time:'+2012-01-01T00:00:00Z'})];
  const base=wikiTransport(requests,entity),api=new e.T.Api(()=>'',async request=>{
-  assert.match(request.headers['User-Agent'],/^MediaCatalog\/0\.8\.0 \(https:\/\/github.com\/KsandrSol\/obsidian-media-catalog\)$/);
+  assert.match(request.headers['User-Agent'],/^MediaCatalog\/0\.9\.0 \(https:\/\/github.com\/KsandrSol\/obsidian-media-catalog\)$/);
   assert.equal(request.headers['Api-User-Agent'],request.headers['User-Agent']);
   if(attempt++===0)return {status:429,headers:{'Retry-After':'3'}};
   if(attempt===2)return {status:429,headers:{'retry-after':new Date(now+6000).toUTCString()}};
