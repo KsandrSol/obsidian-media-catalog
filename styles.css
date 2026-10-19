@@ -16,7 +16,7 @@
 .kmp-catalog .kmp-board { display: flex; gap: var(--size-4-3); overflow-x: auto; padding-bottom: var(--size-4-3); align-items: flex-start; }
 .kmp-catalog .kmp-column { flex: 0 0 250px; padding: var(--size-4-2); background: var(--background-secondary); border-radius: var(--radius-m); }
 .kmp-catalog .kmp-column h4 { margin-top: 0; }
-.kmp-catalog .kmp-media-card { padding: var(--size-4-3); margin-bottom: var(--size-4-3); background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); }
+.kmp-catalog .kmp-media-card { display: flex; flex-direction: column; min-width: 0; padding: var(--size-4-3); margin-bottom: var(--size-4-3); background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); }
 .kmp-catalog .kmp-media-cover { aspect-ratio: 2 / 3; max-height: 240px; display: flex; align-items: center; justify-content: center; background: var(--background-secondary); color: var(--text-muted); margin-bottom: var(--size-4-2); }
 .kmp-catalog .kmp-media-cover img { width: 100%; height: 100%; object-fit: contain; }
 .kmp-catalog .kmp-card-title { display: block; height: auto; white-space: normal; text-align: left; font-weight: var(--font-semibold); padding: 0; background: transparent; box-shadow: none; color: var(--text-normal); }
@@ -26,7 +26,11 @@
 .kmp-catalog .kmp-media-card select { width: 100%; min-height: 44px; margin-top: var(--size-4-1); }
 
 .kmp-catalog button.kmp-media-cover { width: 100%; height: auto; padding: 0; cursor: pointer; }
-.kmp-catalog .kmp-card-open { min-height: 44px; margin-bottom: var(--size-4-2); }
+.kmp-catalog .kmp-card-open { min-height: 44px; margin: 0; }
+.kmp-catalog .kmp-card-footer { margin-top: auto; display: flex; flex-direction: column; gap: var(--size-4-2); }
+.kmp-catalog .kmp-card-footer > .kmp-card-meta { margin: 0; }
+.kmp-catalog .kmp-card-actions { display: flex; flex-wrap: wrap; gap: var(--size-4-2); }
+.kmp-catalog .kmp-card-actions > button { height: 44px; min-height: 44px; margin: 0; padding: 0 var(--size-4-2); }
 
 .ksandr-media-picker select { width: 100%; min-height: 44px; margin-bottom: .75em; }
 .ksandr-media-picker input[type="checkbox"] { width: auto; min-height: auto; }

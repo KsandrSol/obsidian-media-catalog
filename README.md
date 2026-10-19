@@ -103,4 +103,8 @@ Live source checks: node scripts/check-live.cjs and node scripts/check-live-film
 
 Use **Rate** from the command palette with an open film/book note (desktop or mobile), or the **Rate** button on a catalog card or Kanban item. Choose an integer from 1 to 10 or Not rated, enter a single-line review, and save. The plugin updates only `rating` and `review` through `FileManager.processFrontMatter`; stale personal edits are rejected. Both fields appear on catalog cards and remain protected during metadata filling. New Base templates include My review in every view with My rating; existing bases are left for their owner to update.
 
-The installation archive is `ksandr-media-picker-0.7.0.zip` and contains only `ksandr-media-picker/` with `main.js`, `manifest.json`, and `styles.css`. `INSTALL-0.7.0.md` is distributed separately beside it. Keep the installed `data.json` when replacing the three plugin files.
+The installation archive is `ksandr-media-picker-0.7.1.zip` and contains only `ksandr-media-picker/` with `main.js`, `manifest.json`, and `styles.css`. `INSTALL-0.7.1.md` is distributed separately beside it. Keep the installed `data.json` when replacing the three plugin files.
+
+## Catalog layout fixes in 0.7.1
+
+Card actions share a wrapping flex container with equal button heights and gaps. The rating, actions and status sit in a bottom-aligned footer. Creator names display wiki-link labels (including aliases) in cards and Kanban without changing note properties.

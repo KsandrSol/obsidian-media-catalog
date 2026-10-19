@@ -8,6 +8,9 @@ const STATUS_ALIASES={planned:["planned","want to watch","want to read","хоч�
 function statusCode(value) {const v=typeof value==="string"?value.trim().toLowerCase():"";return STATUS_CODES.find(k=>STATUS_ALIASES[k].includes(v))||"other";}
 function statusLabel(kind,code,locale) {return translate(({planned:kind==="film"?"Хочу посмотреть":"Хочу прочитать",in_progress:kind==="film"?"Смотрю":"Читаю",completed:kind==="film"?"Просмотрено":"Прочитано",on_hold:"На паузе",dropped:"Брошено",other:"Другие статусы"})[code],locale);}
 
+function creatorDisplay(value) {
+  return (Array.isArray(value)?value:[value]).filter(v=>typeof v==="string").map(v=>v.replace(/\[\[([^\]\r\n]+)\]\]/g,(_,link)=>link.includes("|")?link.slice(link.indexOf("|")+1):link).trim()).filter(Boolean).join(", ");
+}
 function shortDescription(raw,fm={}) {
   const body=raw.replace(/^\ufeff?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/,"");
   const heading=/(?:^|\n)## (?:О чём|О книге|Synopsis|About the book)[ \t]*\r?\n/.exec(body);
@@ -112,7 +115,7 @@ class Api {
     const host=new URL(url).hostname;
     if(host==="wikidata.org"||host.endsWith(".wikidata.org")||host.endsWith(".wikipedia.org")||host.endsWith(".wikimedia.org")) {
       const job=this.wikiTail.then(async()=>{
-        const agent="MediaCatalog/0.7.0 (https://github.com/KsandrSol/obsidian-media-catalog)";
+        const agent="MediaCatalog/0.7.1 (https://github.com/KsandrSol/obsidian-media-catalog)";
         for(let attempt=0;attempt<4;attempt++){
           const wait=this.lastWiki+1050-this.now();if(wait>0)await this.delay(wait);
           let r;try{r=await this.rawResponse(url,{...headers,"User-Agent":agent,"Api-User-Agent":agent});}finally{this.lastWiki=this.now();}
@@ -613,16 +616,18 @@ class CatalogWidget extends MarkdownRenderChild {
     const fallback=()=>{cover.empty();cover.createEl("span",{text:this.plugin.t("Обложка недоступна")});};
     if(url){const image=cover.createEl("img",{attr:{src:url,alt:String(fm.title||file.basename),loading:"lazy"}});image.setAttribute("draggable","false");this.renderer.registerDomEvent(image,"error",fallback);}else fallback();
     const title=card.createEl("button",{text:String(fm.title||file.basename),cls:"kmp-card-title"});this.renderer.registerDomEvent(title,"click",openNote);
-    const creator=fm.author||fm.director;card.createEl("p",{text:[Array.isArray(creator)?creator.join(", "):creator,fm.year].filter(Boolean).join(" · "),cls:"kmp-card-meta"});
+    const creator=fm.author||fm.director;card.createEl("p",{text:[creatorDisplay(creator),fm.year].filter(Boolean).join(" · "),cls:"kmp-card-meta"});
     card.createEl("p",{text:summary||this.plugin.t("Нет описания"),cls:"kmp-card-summary"});
-    card.createEl("p",{text:this.plugin.t("Моя оценка")+": "+(Number.isInteger(fm.rating)&&fm.rating>=1&&fm.rating<=10?fm.rating+" / 10":this.plugin.t("Не оценено")),cls:"kmp-card-meta"});
     if(typeof fm.review==="string"&&fm.review)card.createEl("p",{text:fm.review,cls:"kmp-card-review"});
-    const rate=card.createEl("button",{text:this.plugin.t("Оценить"),cls:"kmp-card-open",attr:{type:"button"}});this.renderer.registerDomEvent(rate,"click",()=>this.plugin.openReview(file));
-    const open=card.createEl("button",{text:this.plugin.t("Открыть заметку"),cls:"kmp-card-open",attr:{type:"button"}});this.renderer.registerDomEvent(open,"click",openNote);
-    const task=card.createEl("button",{text:this.plugin.t("В задачу"),cls:"kmp-card-open",attr:{type:"button"}});this.renderer.registerDomEvent(task,"click",()=>this.plugin.openTaskModal(file));
-    let taskPaths=[];try{taskPaths=linkedTaskPaths(this.plugin.app,file,fm);}catch(e){card.createEl("p",{text:this.plugin.t(e.message),cls:"kmp-help"});}
-    for(const path of taskPaths){const taskFile=this.plugin.app.vault.getAbstractFileByPath(path);if(taskFile?.extension==="md"){const linked=card.createEl("button",{text:this.plugin.t("Задача: ")+taskFile.basename,cls:"kmp-card-open"});this.renderer.registerDomEvent(linked,"click",()=>this.plugin.openTaskNote(path).catch(e=>new Notice(this.plugin.t(e.message))));}}
-    const label=card.createEl("label",{text:this.plugin.t("Статус")}),select=label.createEl("select");select.setAttribute("aria-label",this.plugin.t("Статус")+": "+String(fm.title||file.basename));
+    const footer=card.createDiv({cls:"kmp-card-footer"});
+    footer.createEl("p",{text:this.plugin.t("Моя оценка")+": "+(Number.isInteger(fm.rating)&&fm.rating>=1&&fm.rating<=10?fm.rating+" / 10":this.plugin.t("Не оценено")),cls:"kmp-card-meta"});
+    const actions=footer.createDiv({cls:"kmp-card-actions"});
+    const rate=actions.createEl("button",{text:this.plugin.t("Оценить"),cls:"kmp-card-open",attr:{type:"button"}});this.renderer.registerDomEvent(rate,"click",()=>this.plugin.openReview(file));
+    const open=actions.createEl("button",{text:this.plugin.t("Открыть заметку"),cls:"kmp-card-open",attr:{type:"button"}});this.renderer.registerDomEvent(open,"click",openNote);
+    const task=actions.createEl("button",{text:this.plugin.t("В задачу"),cls:"kmp-card-open",attr:{type:"button"}});this.renderer.registerDomEvent(task,"click",()=>this.plugin.openTaskModal(file));
+    let taskPaths=[];try{taskPaths=linkedTaskPaths(this.plugin.app,file,fm);}catch(e){footer.createEl("p",{text:this.plugin.t(e.message),cls:"kmp-help"});}
+    for(const path of taskPaths){const taskFile=this.plugin.app.vault.getAbstractFileByPath(path);if(taskFile?.extension==="md"){const linked=footer.createEl("button",{text:this.plugin.t("Задача: ")+taskFile.basename,cls:"kmp-card-open"});this.renderer.registerDomEvent(linked,"click",()=>this.plugin.openTaskNote(path).catch(e=>new Notice(this.plugin.t(e.message))));}}
+    const label=footer.createEl("label",{text:this.plugin.t("Статус")}),select=label.createEl("select");select.setAttribute("aria-label",this.plugin.t("Статус")+": "+String(fm.title||file.basename));
     const current=statusCode(fm.status);if(current==="other")select.createEl("option",{text:typeof fm.status==="string"?fm.status:this.plugin.t("Без статуса"),attr:{value:"other"}});
     for(const code of STATUS_CODES)select.createEl("option",{text:statusLabel(this.kind,code,this.plugin.locale),attr:{value:code}});select.value=current;
     this.renderer.registerDomEvent(select,"change",async()=>{const code=select.value;select.disabled=true;try{await this.changeStatus(item,code);}finally{select.disabled=false;}});

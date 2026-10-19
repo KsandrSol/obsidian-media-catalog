@@ -308,7 +308,7 @@ test('Мстители (2012): Wikimedia 429 respects Retry-After and identifies
  const e=environment(),requests=[],waits=[];let now=Date.UTC(2026,9,19),attempt=0;
  const entity=wikiFilm('Q182218');entity.labels.ru.value='Мстители';entity.claims.P577=[claim({time:'+2012-01-01T00:00:00Z'})];
  const base=wikiTransport(requests,entity),api=new e.T.Api(()=>'',async request=>{
-  assert.match(request.headers['User-Agent'],/^MediaCatalog\/0\.7\.0 \(https:\/\/github.com\/KsandrSol\/obsidian-media-catalog\)$/);
+  assert.match(request.headers['User-Agent'],/^MediaCatalog\/0\.7\.1 \(https:\/\/github.com\/KsandrSol\/obsidian-media-catalog\)$/);
   assert.equal(request.headers['Api-User-Agent'],request.headers['User-Agent']);
   if(attempt++===0)return {status:429,headers:{'Retry-After':'3'}};
   if(attempt===2)return {status:429,headers:{'retry-after':new Date(now+6000).toUTCString()}};
@@ -371,4 +371,17 @@ test('catalog cards and kanban display rating and review and open the same edito
 test('review is a personal field in new cards, every rating base view and metadata filling',async()=>{
  const e=environment();for(const kind of ['book','film']){const r=record(kind);r.fields.review='Отзыв источника';r.fields.rating=3;const config=yaml.parse(e.T.baseText(kind,e.T.FOLDERS[kind],'ru'));assert.equal(config.properties.review.displayName,'Мой отзыв');for(const view of config.views)if(view.order.includes('rating'))assert.ok(view.order.includes('review'));
  assert.equal(e.T.frontmatter(e.T.cardText(r)).review,'');for(const review of ['',null,'Мой отзыв']){const raw=fm({type:kind,author:'[[Роберт Чалдини]]',rating:9,review}),patch=e.T.metadataPatch(raw,r);assert.equal(Object.hasOwn(patch,'review'),false);assert.equal(Object.hasOwn(patch,'rating'),false);}}
+});
+
+test('catalog and kanban display creator wikilinks and aliases without modifying frontmatter',async()=>{
+ const e=environment(),f=appFixture(),p=new e.Plugin(f.app);await p.onload();
+ const samples=[['film',{director:'[[Гор Вербински]]'},'Гор Вербински · 2025'],['film',{director:['[[People/Гор Вербински|Гор Вербински]]','Обычное имя']},'Гор Вербински, Обычное имя · 2025'],['book',{author:'[[Роберт Чалдини]]'},'Роберт Чалдини · 2025'],['book',{author:['[[Эндрю Хант|Э. Хант]]','[[Дэвид Томас]]']},'Э. Хант, Дэвид Томас · 2025']];
+ for(const [index,[kind,creators,expected]] of samples.entries()){
+  const raw=fm({type:kind,title:'Позиция '+index,year:2025,...creators}),file=f.file(p.folders[kind]+'/Позиция '+index+'.md',raw);
+  for(const mode of ['cards','kanban']){const element=new El(),w=new e.T.CatalogWidget(p,element,kind,'',mode);w.load();await w.refresh();const card=element.find('article').find(c=>c.find('button').some(b=>b.textContent==='Позиция '+index));assert.ok(card.find('p').some(x=>x.textContent===expected));assert.equal(f.content.get(file.path),raw);w.unload();}
+ }assert.equal(f.writes.length,0);
+});
+test('catalog and kanban group the three actions in one footer container',async()=>{
+ const e=environment(),f=appFixture(),p=new e.Plugin(f.app);await p.onload();f.file(p.folders.film+'/Матрица.md',fm({type:'film',title:'Матрица',rating:9,review:'Пересмотрю'}));
+ for(const mode of ['cards','kanban']){const element=new El(),w=new e.T.CatalogWidget(p,element,'film','',mode);w.load();await w.refresh();const card=element.find('article')[0],footer=card.children.find(c=>c.classes.includes('kmp-card-footer'));assert.ok(footer);const actions=footer.children.find(c=>c.classes.includes('kmp-card-actions'));assert.ok(actions);assert.deepEqual(actions.children.map(b=>b.textContent),['Оценить','Открыть заметку','В задачу']);assert.ok(actions.children.every(b=>b.tag==='button'&&b.classes.includes('kmp-card-open')));assert.ok(footer.find('p').some(p=>p.textContent==='Моя оценка: 9 / 10'));assert.equal(footer.find('select').length,1);w.unload();}
 });
